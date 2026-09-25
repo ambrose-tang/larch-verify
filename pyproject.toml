@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "larch-verify"
+version = "0.1.0"
+description = "Verification-guided development for everyday code: an LLM agent that writes a Lean 4 model of your function, proves properties about it, and differentially tests your implementation against it."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Larch contributors" }]
+keywords = ["lean4", "formal-verification", "llm", "property-based-testing", "differential-testing"]
+classifiers = [
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Testing",
+  "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+  "anthropic>=0.40",
+  "rich>=13.7",
+  "hypothesis>=6.100",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+larch = "larch.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["larch"]
+
+[tool.hatch.build.targets.sdist]
+include = ["larch", "README.md", "DECISIONS.md", "EVALS.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
