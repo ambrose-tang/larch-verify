@@ -232,3 +232,38 @@ def test_extract_code_block():
     t = "text\n```lean\ntheorem a : True := trivial\n```\nmore\n```lean\ntheorem b : True := trivial\n```"
     assert extract_code_block(t) == "theorem b : True := trivial"
     assert extract_code_block("no code") is None
+
+
+# -- harness client robustness -------------------------------------------------------------------
+
+def test_harness_client_skips_non_json_lines(tmp_path: Path):
+    import sys
+
+    from larch.lean.harness_client import HarnessClient
+
+    script = tmp_path / "fake_harness.py"
+    script.write_text(
+        "import sys, json\n"
+        "print('Foo.lean:1:1: warning: unused variable', flush=True)\n"
+        "for line in sys.stdin:\n"
+        "    req = json.loads(line)\n"
+        "    if req.get('op') == 'ping':\n"
+        "        print(json.dumps({'pong': True}), flush=True)\n"
+        "    else:\n"
+        "        print('PANIC at something', flush=True)\n"
+        "        print(json.dumps({'echo': req}), flush=True)\n"
+    )
+    c = HarnessClient([sys.executable, str(script)], env={}, cwd=str(tmp_path), timeout=5)
+    c.start()
+    assert c.request({"op": "case", "x": 1}) == {"echo": {"op": "case", "x": 1}}
+    c.close()
+
+
+def test_exceptions_harness_uses_option():
+    spec = _clamp_spec()
+    spec.exceptions = True
+    assert spec.model_ret == "Option (Int)"
+    text = harness_module(spec)
+    assert "def encRes (r : Option (Int)) : Json" in text
+    assert "set_option linter.all false" in text
+    assert "(Option (Int))" in model_module(spec)

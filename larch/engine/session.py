@@ -233,25 +233,10 @@ def _run(ctx: RunContext, report: Report, spec_override: FormalSpec | None) -> N
     mt = threading.Thread(target=_mutation, daemon=True) if mutants else None
     if mt:
         mt.start()
-    proofs: dict[str, ProofResult] = {}
-    with ui.step(f"Prove {len(spec.spec_names())} specs in Lean") as st, ctx.timed("prove"):
-        done_names: list[str] = []
-
-        def _on_done(r: ProofResult):
-            done_names.append(r.name)
-            st.update(f"{len(done_names)}/{len(spec.spec_names())} done")
-
-        proofs = prove_all(ctx, spec, on_done=_on_done)
-        st.update("checking proofs (axioms, statements, kernel replay)")
-        proofs = finalize_proofs(ctx, spec, proofs)
-        n_ok = sum(1 for p in proofs.values() if p.status == "proved")
-        st.done(f"{n_ok}/{len(proofs)} proved", status="ok" if n_ok == len(proofs) else "warn")
-        for name in spec.spec_names():
-            p = proofs[name]
-            if p.status == "proved":
-                st.line(f"[green]✓[/] {name}  [dim]{p.method} · {p.elapsed:.0f}s[/]")
-            else:
-                st.line(f"[yellow]✗[/] {name}  [dim]{_first_line(p.error)}[/]")
+    if cfg.run_proofs:
+        proofs = _prove_stage(ctx, spec)
+    else:
+        proofs = {n: ProofResult(name=n, status="not_attempted") for n in spec.spec_names()}
     _write_proofs(ctx, spec, proofs)
 
     if mt:
@@ -333,6 +318,29 @@ def _run(ctx: RunContext, report: Report, spec_override: FormalSpec | None) -> N
     possible = [f for f in findings if f.confidence == "possible"]
     if possible and report.verdict != "bug":
         report.warnings.append(f"{len(possible)} disagreement(s) could not be attributed to the code or the model; review them")
+
+
+def _prove_stage(ctx: RunContext, spec: FormalSpec) -> dict[str, ProofResult]:
+    ui = ctx.ui
+    with ui.step(f"Prove {len(spec.spec_names())} specs in Lean") as st, ctx.timed("prove"):
+        done_names: list[str] = []
+
+        def _on_done(r: ProofResult):
+            done_names.append(r.name)
+            st.update(f"{len(done_names)}/{len(spec.spec_names())} done")
+
+        proofs = prove_all(ctx, spec, on_done=_on_done)
+        st.update("checking proofs (axioms, statements, kernel replay)")
+        proofs = finalize_proofs(ctx, spec, proofs)
+        n_ok = sum(1 for p in proofs.values() if p.status == "proved")
+        st.done(f"{n_ok}/{len(proofs)} proved", status="ok" if n_ok == len(proofs) else "warn")
+        for name in spec.spec_names():
+            p = proofs[name]
+            if p.status == "proved":
+                st.line(f"[green]✓[/] {name}  [dim]{p.method} · {p.elapsed:.0f}s[/]")
+            else:
+                st.line(f"[yellow]✗[/] {name}  [dim]{_first_line(p.error)}[/]")
+    return proofs
 
 
 def _first_line(s: str) -> str:

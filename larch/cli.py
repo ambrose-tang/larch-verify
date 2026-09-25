@@ -24,7 +24,7 @@ def _parse_target(t: str) -> tuple[Path, list[str]]:
 
 def cmd_verify(args, console: Console) -> int:
     from .engine.session import verify_function
-    from .py.extract import ExtractError, list_functions
+    from .py.extract import ExtractError, extract, list_functions
     from .ui import RichUI, UI
 
     overrides = dict(
@@ -67,10 +67,11 @@ def cmd_verify(args, console: Console) -> int:
         cfg.extra["reuse"] = bool(args.reuse)
         for func in funcs:
             try:
-                report = verify_function(path, func, cfg, ui)
+                extract(path, func)
             except ExtractError as e:
-                console.print(f"[red]error:[/] {e}")
-                return 3
+                console.print(f"[yellow]skipping {path.name}::{func}:[/] {e}")
+                continue
+            report = verify_function(path, func, cfg, ui)
             ui.final(report)
             reports.append(report)
             if report.findings and args.apply:
@@ -224,7 +225,7 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--python", help="interpreter used to run your code (default: project .venv or current)")
     v.add_argument("--artifacts", help="directory for run artifacts (default ~/.cache/larch/runs)")
     v.add_argument("--formalize-mode", choices=["hybrid", "intent", "transliterate"])
-    v.add_argument("--proof-strategy", choices=["llm", "portfolio+llm", "portfolio+sketch"])
+    v.add_argument("--proof-strategy", choices=["portfolio", "llm", "portfolio+llm", "portfolio+sketch"])
     v.add_argument("--test-strategy", choices=["typed", "llm", "mixed"])
     v.add_argument("--proof-attempts", type=int)
     v.add_argument("--seed", type=int)
@@ -253,7 +254,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     console = Console(highlight=False)
     if args.cmd is None:
-        parser.print_help()
+        console.print(
+            "[bold #d97757]✻ Larch[/] [dim]verification-guided development with Lean 4[/]\n\n"
+            "  [bold]larch verify[/] path/to/file.py::function   verify one function\n"
+            "  [bold]larch verify[/] path/to/file.py             verify every public function in a file\n"
+            "  [bold]larch doctor --install[/]                   set up Lean and check your LLM access\n"
+            "  [bold]larch show[/]                               show the last report\n\n"
+            "[dim]Run `larch verify --help` for options.[/]"
+        )
         return 0
     try:
         if args.cmd == "verify":

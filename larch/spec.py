@@ -91,7 +91,9 @@ class FormalSpec:
 
     @property
     def model_ret(self) -> str:
-        return f"Except String ({self.return_type})" if self.exceptions else self.return_type
+        # Exceptions are modelled as `none` ("raises"). Larch never compares exception
+        # types/messages, and Option has DecidableEq/membership, so specs stay decidable.
+        return f"Option ({self.return_type})" if self.exceptions else self.return_type
 
     def active_posts(self) -> list[Postcondition]:
         return [p for p in self.postconditions if p.status != "rejected"]
@@ -247,24 +249,20 @@ def harness_module(spec: FormalSpec) -> str:
     post_impl = ", ".join(f"decide (Larch.post_{p.name} {n} larchRi)" for p in posts)
     if spec.exceptions:
         enc_dec = f"""
-def encRes (r : Except String ({ret})) : Json :=
+def encRes (r : Option ({ret})) : Json :=
   match r with
-  | .ok v => Json.mkObj [("ok", toJson v)]
-  | .error e => Json.mkObj [("error", Json.str e)]
+  | some v => Json.mkObj [("ok", toJson v)]
+  | none => Json.mkObj [("error", Json.str "raises")]
 
-def decRes (j : Json) : Except String (Except String ({ret})) := do
+def decRes (j : Json) : Except String (Option ({ret})) := do
   match j.getObjVal? "ok" with
-  | .ok v => return .ok (← fromJson? v)
+  | .ok v => return some (← fromJson? v)
   | .error _ =>
     match j.getObjVal? "error" with
-    | .ok e => return .error (e.getStr?.toOption.getD "error")
+    | .ok _ => return none
     | .error _ => throw "implementation result must be an object with `ok` or `error`"
 
-def sameRes (a b : Except String ({ret})) : Bool :=
-  match a, b with
-  | .ok x, .ok y => x == y
-  | .error _, .error _ => true
-  | _, _ => false
+def sameRes (a b : Option ({ret})) : Bool := a == b
 """
     else:
         enc_dec = f"""
@@ -285,6 +283,9 @@ def sameRes (a b : {ret}) : Bool := a == b
     return f"""import LarchModel
 import Lean.Data.Json
 open Lean
+
+-- `lean --run` prints elaboration messages to stdout, which is our response channel.
+set_option linter.all false
 
 namespace LarchHarness
 

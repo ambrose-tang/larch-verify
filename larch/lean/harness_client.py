@@ -88,10 +88,15 @@ class HarnessClient:
             self.start()
         assert self.proc is not None and self.proc.stdin is not None
         data = (json.dumps(obj, separators=(",", ":")) + "\n").encode()
+        budget = timeout if timeout is not None else self.timeout
         try:
             self.proc.stdin.write(data)
             self.proc.stdin.flush()
-            line = self._readline(timeout if timeout is not None else self.timeout)
+            deadline = time.monotonic() + budget
+            line = self._readline(budget)
+            # Skip anything that is not a JSON object (stray diagnostics, dbg output).
+            while not line.lstrip().startswith(b"{"):
+                line = self._readline(max(0.01, deadline - time.monotonic()))
         except (HarnessTimeout, HarnessError, BrokenPipeError, OSError) as e:
             # Leave the client usable for the next request.
             try:

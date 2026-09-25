@@ -114,7 +114,13 @@ def build_lean(ctx: RunContext, spec: FormalSpec) -> list[str]:
         err = hres.error_text()
         hint = ""
         if "Decidable" in err or "decide" in err:
-            hint = "\nHint: every precondition, postcondition and property must be decidable (bounded quantifiers, List.Pairwise/Perm, Bool-valued checks)."
+            hint = (
+                "\nHint: Larch evaluates every spec with `decide`, so each must be decidable. Usual causes: "
+                "(1) `match`/`if let` inside a spec: use `result = none`, `result = some v`, `∀ v ∈ result, P v`, "
+                "or a Bool-valued helper defined in the model code (`helper … = true`); "
+                "(2) unbounded quantifiers: bound them (`∀ i, i < n → …`, `∃ x ∈ xs, …`); "
+                "(3) `=` on a type without DecidableEq."
+            )
         if "BEq" in err or "ToJson" in err or "FromJson" in err:
             hint += "\nHint: parameter and return types must be built from Int, Nat, Bool, String, Char, List, Array, Option and ×."
         problems.append("The test harness generated from your specs does not compile:\n" + err + hint)

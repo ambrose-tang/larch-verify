@@ -38,6 +38,7 @@ class Config:
     adjudicate: bool = True
     propose_fixes: bool = True
     run_mutation: bool = True
+    run_proofs: bool = True
     python: str | None = None
     artifacts: str | None = None  # directory for run artifacts (default: user cache)
 

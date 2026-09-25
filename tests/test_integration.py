@@ -162,3 +162,62 @@ def test_pipeline_finds_bug_and_validates_fix(tmp_path: Path):
     assert top.fix is not None and top.fix.validated
     assert "-        return hi + 1" in top.fix.diff and "+        return hi" in top.fix.diff
     assert f.read_text() == CLAMP_BUG  # read-only: the fix is only proposed
+
+
+# -- exceptions are modelled as `none` -----------------------------------------------------------
+
+DIV_OK = '''\
+def safe_div(a: int, b: int) -> int:
+    """Floor-divide a by b. Raises ZeroDivisionError when b == 0."""
+    if b == 0:
+        raise ZeroDivisionError("b is zero")
+    return a // b
+'''
+
+DIV_BUG = DIV_OK.replace('raise ZeroDivisionError("b is zero")', "return 0")
+
+DIV_FORMALIZATION = {
+    "understanding": "Floor division that raises on a zero divisor.",
+    "params": [{"name": "a", "lean_type": "Int"}, {"name": "b", "lean_type": "Int"}],
+    "return_type": "Int",
+    "exceptions": True,
+    "model": "def model (a b : Int) : Option Int :=\n  if b = 0 then none else some (Int.fdiv a b)",
+    "precondition": {"english": "none", "lean": "True"},
+    "postconditions": [
+        {"name": "raises_iff_zero", "english": "Raises exactly when b is zero.", "lean": "result = none ↔ b = 0"},
+        {"name": "floor_quotient", "english": "Otherwise returns the floor quotient.", "lean": "∀ q ∈ result, b * q ≤ a ∧ a < b * q + b ∨ b < 0"},
+    ],
+    "properties": [],
+    "strategy": "def strategy(st):\n    return st.tuples(st.integers(-100, 100), st.integers(-5, 5))",
+    "edge_cases": "[[7, 0], [-7, 2], [7, -2]]",
+    "notes": "",
+}
+
+
+def fake_div_llm():
+    def respond(req):
+        if req.stage == "formalize":
+            return DIV_FORMALIZATION
+        if req.stage == "adjudicate":
+            return {"verdict": "implementation_bug", "explanation": "must raise on zero"}
+        if req.stage == "fix":
+            return {"explanation": "raise on zero", "fixed_function": DIV_OK}
+        return "```lean\n-- nothing\n```"
+
+    return LLM(FakeProvider(respond), Ledger())
+
+
+def test_exceptions_modelled_as_none(tmp_path: Path):
+    from larch.engine.session import verify_function
+
+    cfg = _cfg(tmp_path)
+    cfg.run_mutation = False
+    f = tmp_path / "safe_div.py"
+    f.write_text(DIV_OK)
+    ok = verify_function(f, "safe_div", cfg, llm=fake_div_llm())
+    assert ok.verdict in ("passed", "partial"), (ok.error, ok.headline)
+    assert ok.drt["disagreements"] == 0 and ok.drt["valid"] > 50
+    f.write_text(DIV_BUG)
+    bad = verify_function(f, "safe_div", cfg, llm=fake_div_llm())
+    assert bad.verdict == "bug", bad.headline
+    assert any("raises_iff_zero" in fi.violated_specs for fi in bad.findings)

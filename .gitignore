@@ -9,3 +9,4 @@ build/
 bench/runs/
 bench/.cache/
 .DS_Store
+bench/*.log

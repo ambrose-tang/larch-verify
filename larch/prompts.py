@@ -70,8 +70,9 @@ false alarms.
   with the given Lean names and your chosen types. Helper definitions may come first.
 - Exceptions: if the function is designed to raise on some inputs it is meant to receive
   (e.g. ValueError on malformed input), set "exceptions": true. Then `model` returns
-  `Except String T` (use `.error "ValueError"` where Python raises) and postconditions
-  receive `result : Except String T`. Otherwise exclude those inputs with the precondition.
+  `Option T`: `none` means "raises" (the exception type is not compared) and `some v`
+  means "returns v". Postconditions receive `result : Option T`. Otherwise exclude those
+  inputs with the precondition.
 
 ## How to specify
 - Postconditions relate the inputs to `result` and must hold for EVERY input that satisfies
@@ -85,8 +86,12 @@ false alarms.
   (monotonicity, idempotence, symmetry, round-trips). They may call `model`.
 - Every precondition, postcondition and property body must be DECIDABLE, because it is
   tested with `decide`. Use bounded quantifiers (`∀ i, i < xs.length → …`, `∀ x ∈ xs, …`,
-  `∃ x ∈ xs, …`), `List.Pairwise`, `List.Perm`, `List.count`, and Bool-valued functions.
-  Never use an unbounded `∀ n : Int` or `∃ n : Nat`.
+  `∃ x ∈ xs, …`), `List.Pairwise`, `List.Perm`, `List.count`, `if c then P else Q`, and
+  Bool-valued functions. Never use an unbounded `∀ n : Int` or `∃ n : Nat`.
+- NEVER put `match` or `if let` inside a spec body: instance search cannot decide it. For
+  an Option result write `result = none`, `result = some v`, `result.isSome`, or
+  `∀ v ∈ result, P v` ("if it returns v then P v"). For anything more complex, define a
+  Bool-valued helper function in the model code and state `helper … = true`.
 - Write every "english" field in plain language a developer can check against their
   intent, without any Lean knowledge. Mention edge cases explicitly.
 

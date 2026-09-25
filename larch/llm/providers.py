@@ -7,6 +7,7 @@ import random
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Callable
@@ -100,6 +101,9 @@ class AnthropicProvider(Provider):
         )
 
 
+_CLI_SLOTS = threading.BoundedSemaphore(int(os.environ.get("LARCH_MAX_CONCURRENCY", "6")))
+
+
 class ClaudeCodeProvider(Provider):
     """Headless Claude Code (`claude -p`): uses the user's Claude Code login, no API key.
 
@@ -135,6 +139,7 @@ class ClaudeCodeProvider(Provider):
             cmd += ["--json-schema", json.dumps(req.json_schema)]
         env = {k: v for k, v in os.environ.items() if k not in ("CLAUDECODE",)}
         last_err = "unknown error"
+        _CLI_SLOTS.acquire()
         try:
             for attempt in range(5):
                 t0 = time.monotonic()
@@ -184,6 +189,7 @@ class ClaudeCodeProvider(Provider):
                     stop_reason=d.get("stop_reason"),
                 )
         finally:
+            _CLI_SLOTS.release()
             try:
                 os.unlink(sys_path)
             except OSError:
