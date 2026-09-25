@@ -267,3 +267,22 @@ def test_exceptions_harness_uses_option():
     assert "def encRes (r : Option (Int)) : Json" in text
     assert "set_option linter.all false" in text
     assert "(Option (Int))" in model_module(spec)
+
+
+def test_usage_limit_detected_not_retried(tmp_path: Path):
+    import json as _json
+    import os
+    import stat
+
+    from larch.llm.base import LLMRequest, UsageLimitError
+    from larch.llm.providers import ClaudeCodeProvider
+
+    fake = tmp_path / "claude"
+    payload = {"is_error": True, "api_error_status": 429, "result": "You've hit your session limit · resets 7:40am"}
+    (tmp_path / "payload.json").write_text(_json.dumps(payload))
+    fake.write_text(f"#!/bin/sh\ncat > /dev/null\ncat '{tmp_path / 'payload.json'}'\n")
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    p = ClaudeCodeProvider(binary=str(fake))
+    with pytest.raises(UsageLimitError) as ei:
+        p.complete(LLMRequest(system="s", prompt="p", model="claude-sonnet-5"))
+    assert ei.value.reset_hint == "7:40am"

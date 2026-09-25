@@ -32,6 +32,12 @@ Python-to-Lean mapping (be exact; differential tests will catch any mismatch):
   bitwise `&&&`, `|||`, `^^^`, `<<<`, `>>>`.
 - Sortedness is `List.Pairwise (· ≤ ·) xs`; permutation is `List.Perm xs ys` (write
   `List.Perm a b`, not the `~` notation). There is no `List.Sorted` or `List.insertionSort`.
+- Renamed in this version: use `List.flatten` (not `join`), `List.flatMap` (not `bind`),
+  `xs[i]?` (not `get?`), `String.ofList` (not `String.mk`). There is no Mathlib, so
+  Mathlib lemma names (`le_max_right`, `Nat.succ_le_iff`, …) do not exist.
+- Termination: prefer structural recursion (recurse on the tail of a list, or on `n` in
+  `n+1`). If you need another measure, write `termination_by <measure>` and let Lean
+  find the decreasing proof. Do not write `decreasing_by` proofs.
 """
 
 FORBIDDEN = """\
@@ -96,11 +102,33 @@ false alarms.
   intent, without any Lean knowledge. Mention edge cases explicitly.
 
 ## Input generator
-Python code defining `def strategy(st):`, where `st` is `hypothesis.strategies`. It
-returns a strategy that produces tuples of arguments, in parameter order, that satisfy
-the precondition. Mix typical values with edge cases: empty collections, zero,
-negative numbers, duplicates, boundaries, and large values. Do not import anything.
-`edge_cases` is a JSON array of argument arrays, e.g. `[[0, 0, 0], [5, 1, 3]]`.
+`input_generator` is Python SOURCE CODE, not a description. It defines
+`def strategy(st):`, where `st` is `hypothesis.strategies`, and returns a strategy of
+argument tuples, in parameter order, that satisfy the precondition. Use `.map(...)`
+to build valid inputs directly; avoid `.filter` for anything rare. Mix typical values
+with edge cases: empty collections, zero, negatives, duplicates, boundaries, and large
+values. Do not import anything. `edge_cases` is a JSON array of argument arrays, e.g.
+`[[0, 0, 0], [5, 1, 3]]`.
+
+## Example of a complete answer (for `def index_of(xs: list[int], target: int) -> Optional[int]`,
+documented as "index of the first occurrence of target in xs, or None")
+{{
+  "understanding": "Returns the smallest i with xs[i] == target, or None when target is absent. Empty list gives None.",
+  "params": [{{"name": "xs", "lean_type": "List Int"}}, {{"name": "target", "lean_type": "Int"}}],
+  "return_type": "Option Nat",
+  "exceptions": false,
+  "model": "def model (xs : List Int) (target : Int) : Option Nat :=\\n  match xs with\\n  | [] => none\\n  | x :: rest => if x = target then some 0 else (model rest target).map (· + 1)",
+  "precondition": {{"english": "No restriction.", "lean": "True"}},
+  "postconditions": [
+    {{"name": "found_is_target", "english": "If an index i is returned, xs[i] equals target.", "lean": "∀ i ∈ result, xs[i]? = some target"}},
+    {{"name": "first_occurrence", "english": "No position before the returned index holds target.", "lean": "∀ i ∈ result, ∀ j, j < i → xs[j]? ≠ some target"}},
+    {{"name": "none_iff_absent", "english": "None is returned exactly when target does not occur in xs.", "lean": "result = none ↔ target ∉ xs"}}
+  ],
+  "properties": [],
+  "input_generator": "def strategy(st):\\n    small = st.integers(-3, 3)\\n    return st.tuples(st.lists(small, max_size=8), small)",
+  "edge_cases": "[[[], 1], [[1], 1], [[2, 1, 1], 1], [[1, 2], 3]]",
+  "notes": ""
+}}
 
 {LEAN_ENV}
 {FORBIDDEN}
@@ -150,11 +178,11 @@ FORMALIZE_SCHEMA = {
                 "additionalProperties": False,
             },
         },
-        "strategy": {"type": "string"},
+        "input_generator": {"type": "string", "description": "Python source code defining `def strategy(st):` that returns a hypothesis strategy of argument tuples satisfying the precondition. Code only, no prose."},
         "edge_cases": {"type": "string", "description": "JSON array of argument arrays"},
         "notes": {"type": "string"},
     },
-    "required": ["understanding", "params", "return_type", "exceptions", "model", "precondition", "postconditions", "properties", "strategy", "edge_cases", "notes"],
+    "required": ["understanding", "params", "return_type", "exceptions", "model", "precondition", "postconditions", "properties", "input_generator", "edge_cases", "notes"],
     "additionalProperties": False,
 }
 
@@ -430,3 +458,36 @@ Specs (all proved about the reference model):
 
 def dump(obj) -> str:
     return json.dumps(obj, indent=2, ensure_ascii=False)
+
+
+STRATEGY_SYSTEM = """\
+You write input generators for property-based testing with Python's hypothesis library.
+Reply with a JSON object whose "input_generator" field is Python SOURCE CODE defining
+`def strategy(st):` (`st` is `hypothesis.strategies`; no imports). It returns a strategy
+of argument tuples, in parameter order, that satisfy the precondition. Build valid inputs
+directly with `.map(...)`/`st.builds`; use `.filter` only for conditions that usually hold.
+Include edge cases: empty collections, zero, negatives, duplicates and boundaries."""
+
+STRATEGY_SCHEMA = {
+    "type": "object",
+    "properties": {"input_generator": {"type": "string"}},
+    "required": ["input_generator"],
+    "additionalProperties": False,
+}
+
+
+def strategy_user(info, spec, previous: str, problem: str) -> str:
+    params = ", ".join(f"{p.py_name or p.name}: {p.lean_type}" for p in spec.params)
+    return f"""\
+Function: `{info.signature}`
+Parameters (Lean types): {params}
+Precondition (English): {spec.pre_english}
+Precondition (Lean): {spec.pre_lean}
+
+Previous generator:
+```python
+{previous}
+```
+Problem: {problem}
+
+Write a corrected generator."""

@@ -11,7 +11,7 @@ from ..config import Config
 from ..lean.checker import Checker
 from ..lean.toolchain import find_toolchain
 from ..lean.workspace import LeanWorkspace
-from ..llm.base import LLM, Ledger
+from ..llm.base import LLM, Ledger, UsageLimitError
 from ..llm.providers import make_provider
 from ..py.extract import extract
 from ..py.runner import PythonRunner, default_python
@@ -64,6 +64,8 @@ def verify_function(path: Path, func: str, cfg: Config, ui: UI | None = None, *,
         report.verdict = "error"
         report.error = f"{e}: " + "; ".join(p.splitlines()[0] for p in e.problems[:3])
         report.headline = "Could not formalize this function."
+    except UsageLimitError:
+        raise  # not a property of the function: let the caller pause or report it
     except KeyboardInterrupt:
         report.verdict = "error"
         report.error = "interrupted"

@@ -16,6 +16,14 @@ class BudgetExceeded(LLMError):
     pass
 
 
+class UsageLimitError(LLMError):
+    """The account's usage/session limit is exhausted (not a transient rate limit)."""
+
+    def __init__(self, message: str, reset_hint: str = ""):
+        super().__init__(message)
+        self.reset_hint = reset_hint
+
+
 @dataclass
 class LLMRequest:
     system: str

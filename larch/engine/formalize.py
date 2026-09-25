@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass, field
 
 from ..lean.lint import lint_lean
-from ..llm.base import LLMRequest
+from ..llm.base import UsageLimitError, LLMRequest
 from ..prompts import FORMALIZE_REPAIR, FORMALIZE_SCHEMA, FORMALIZE_SYSTEM, dump, formalize_user
 from ..spec import FormalSpec, Param, Postcondition, Property, edge_cases_from_json, harness_module, model_module
 from .context import RunContext
@@ -70,12 +70,21 @@ def spec_from_data(data: dict, ctx: RunContext) -> tuple[FormalSpec | None, list
         pre_lean=str(pre.get("lean", "True")).strip() or "True",
         postconditions=posts,
         properties=props,
-        strategy_code=str(data.get("strategy", "")),
+        strategy_code=_code_only(str(data.get("input_generator", data.get("strategy", "")))),
         edge_cases=edge_cases_from_json(str(data.get("edge_cases", ""))),
         notes=str(data.get("notes", "")),
     )
     problems += spec.validate()
     return spec, problems
+
+
+def _code_only(text: str) -> str:
+    """Strip a markdown fence if the generator came wrapped in one."""
+    t = text.strip()
+    if t.startswith("```"):
+        t = t.split("\n", 1)[1] if "\n" in t else ""
+        t = t.rsplit("```", 1)[0]
+    return t.strip("\n")
 
 
 def _strip_namespace(code: str) -> str:
@@ -131,9 +140,11 @@ def build_lean(ctx: RunContext, spec: FormalSpec) -> list[str]:
 
 def sanity_check(ctx: RunContext, spec: FormalSpec) -> tuple[list[str], Sanity]:
     """Cheap testing before approval: does the model satisfy its own specs? Does the
-    generator produce valid inputs? (No LLM calls.)"""
+    generator produce valid inputs? (No LLM calls.) Generator-only problems are
+    returned in `san.warnings` (fixed by a cheap targeted repair, never blocking)."""
     san = Sanity()
     problems: list[str] = []
+    gen_problems: list[str] = san.warnings
     res = run_drt(ctx, spec, n=min(400, ctx.cfg.tests), model_only=True, shrink=True)
     if not res.get("ok"):
         return [f"testing the model failed: {res.get('error')}"], san
@@ -143,7 +154,7 @@ def sanity_check(ctx: RunContext, spec: FormalSpec) -> tuple[list[str], Sanity]:
     san.domain_errors = counts.get("domain", 0)
     total = max(1, res.get("inputs", 0))
     if res.get("strategy_note"):
-        problems.append(res["strategy_note"])
+        gen_problems.append(res["strategy_note"])
     if counts.get("harness_error"):
         errs = [f.get("error") for f in res.get("failures", []) if f.get("kind") == "harness_error"][:2]
         problems.append(f"evaluating the model failed on some inputs: {errs}")
@@ -160,10 +171,10 @@ def sanity_check(ctx: RunContext, spec: FormalSpec) -> tuple[list[str], Sanity]:
         )
     if ctx.cfg.test_strategy in ("llm", "mixed") and spec.strategy_code:
         if san.domain_errors > total * 0.2:
-            problems.append(f"the input generator produced {san.domain_errors}/{total} values that do not fit the declared Lean parameter types")
+            gen_problems.append(f"the input generator produced {san.domain_errors}/{total} values that do not fit the declared Lean parameter types")
         valid_frac = san.valid_inputs / total
         if valid_frac < 0.25 and spec.pre_lean.strip() != "True":
-            problems.append(
+            gen_problems.append(
                 f"only {san.valid_inputs}/{total} generated inputs satisfy the precondition; the generator should "
                 "produce mostly valid inputs"
             )
@@ -189,6 +200,32 @@ def sanity_check(ctx: RunContext, spec: FormalSpec) -> tuple[list[str], Sanity]:
         c = impl.get("counts", {})
         san.impl_disagreements = sum(c.get(k, 0) for k in ("value", "crash", "timeout", "type"))
     return problems, san
+
+
+def _repair_generator(ctx: RunContext, spec: FormalSpec, san: Sanity) -> tuple[FormalSpec, Sanity]:
+    """One cheap, targeted call to fix only the input generator. If it does not help,
+    keep the original (DRT then relies on the type-directed half of the mix)."""
+    from ..prompts import STRATEGY_SCHEMA, STRATEGY_SYSTEM, strategy_user
+
+    try:
+        resp = ctx.ask(LLMRequest(
+            system=STRATEGY_SYSTEM, prompt=strategy_user(ctx.info, spec, spec.strategy_code, "; ".join(san.warnings)),
+            model=ctx.cfg.model, stage="generator-repair", effort="low", json_schema=STRATEGY_SCHEMA,
+        ))
+    except UsageLimitError:
+        raise
+    except Exception:  # noqa: BLE001 - generator quality is not worth failing the run
+        return spec, san
+    code = _code_only(str((resp.data or {}).get("input_generator", "")))
+    if not code.strip():
+        return spec, san
+    candidate = FormalSpec.from_json(spec.to_json())
+    candidate.strategy_code = code
+    problems, san2 = sanity_check(ctx, candidate)
+    if not problems and len(san2.warnings) < len(san.warnings) + (0 if san.warnings else 1):
+        if not san2.warnings or san2.valid_inputs > san.valid_inputs:
+            return candidate, san2
+    return spec, san
 
 
 def formalize(ctx: RunContext, *, feedback: str | None = None, previous: FormalSpec | None = None, step=None) -> tuple[FormalSpec, Sanity, int]:
@@ -224,6 +261,10 @@ def formalize(ctx: RunContext, *, feedback: str | None = None, previous: FormalS
                 step.update("testing model against its specs")
             problems, san = sanity_check(ctx, spec)
         if spec is not None and not problems:
+            if san.warnings and ctx.cfg.test_strategy in ("llm", "mixed"):
+                if step:
+                    step.update("repairing the input generator")
+                spec, san = _repair_generator(ctx, spec, san)
             return spec, san, rounds
         last_problems = problems
         prompt = base_prompt + "\n" + FORMALIZE_REPAIR.format(
@@ -245,7 +286,7 @@ def _to_llm_json(spec: FormalSpec) -> dict:
             {"name": q.name, "english": q.english, "params": [{"name": x.name, "lean_type": x.lean_type} for x in q.params], "lean": q.lean}
             for q in spec.properties
         ],
-        "strategy": spec.strategy_code,
+        "input_generator": spec.strategy_code,
         "edge_cases": json.dumps(spec.edge_cases),
         "notes": spec.notes,
     }

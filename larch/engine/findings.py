@@ -5,7 +5,7 @@ from __future__ import annotations
 import difflib
 from dataclasses import dataclass
 
-from ..llm.base import BudgetExceeded, LLMError, LLMRequest
+from ..llm.base import UsageLimitError, BudgetExceeded, LLMError, LLMRequest
 from ..prompts import (
     ADJUDICATE_SCHEMA, ADJUDICATE_SYSTEM, FIX_SCHEMA, FIX_SYSTEM, FORMALIZE_SYSTEM, MODEL_REPAIR_SCHEMA,
     adjudicate_user, fix_user, model_repair_user,
@@ -62,6 +62,8 @@ def adjudicate(ctx: RunContext, spec: FormalSpec, rec: dict) -> tuple[str, str]:
             system=ADJUDICATE_SYSTEM, prompt=adjudicate_user(ctx.info, spec, rec), model=ctx.cfg.model,
             stage="adjudicate", effort=ctx.cfg.effort, json_schema=ADJUDICATE_SCHEMA,
         ))
+    except UsageLimitError:
+        raise
     except (LLMError, BudgetExceeded) as e:
         return "ambiguous", f"(adjudication unavailable: {e})"
     d = resp.data or {}
@@ -81,6 +83,8 @@ def repair_model(ctx: RunContext, spec: FormalSpec, issues: list[str]) -> tuple[
                 system=FORMALIZE_SYSTEM, prompt=prompt, model=ctx.cfg.model, stage="model-repair",
                 effort=ctx.cfg.effort, json_schema=MODEL_REPAIR_SCHEMA,
             ))
+        except UsageLimitError:
+            raise
         except (LLMError, BudgetExceeded) as e:
             return None, str(e), ""
         d = resp.data or {}
@@ -106,6 +110,8 @@ def propose_fix(ctx: RunContext, spec: FormalSpec, recs: list[dict]) -> FixPropo
                 system=FIX_SYSTEM, prompt=fix_user(info, spec, recs, feedback), model=ctx.cfg.model,
                 stage="fix", effort=ctx.cfg.effort, json_schema=FIX_SCHEMA,
             ))
+        except UsageLimitError:
+            raise
         except (LLMError, BudgetExceeded):
             return None
         d = resp.data or {}

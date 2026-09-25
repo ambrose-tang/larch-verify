@@ -220,13 +220,14 @@ def model_module(spec: FormalSpec) -> str:
         ]
     for prop in spec.active_props():
         pb, pn = _binders(prop.params), _names(prop.params)
+        stmt = f"∀ {pb}, prop_{prop.name} {pn}" if prop.params else f"prop_{prop.name}"
         lines += [
             _doc(f"Property `{prop.name}`: {prop.english}"),
-            f"abbrev prop_{prop.name} {pb} : Prop :=",
+            f"abbrev prop_{prop.name} {pb} : Prop :=".replace("  :", " :"),
             f"  {_indent_cont(prop.lean.strip())}",
             "",
             f"def spec_{prop.name} : Prop :=",
-            f"  ∀ {pb}, prop_{prop.name} {pn}",
+            f"  {stmt}",
             "",
         ]
     lines.append("end Larch")
@@ -391,7 +392,7 @@ def statement_text(spec: FormalSpec, name: str) -> str:
             )
     for prop in spec.active_props():
         if prop.name == name:
-            return f"∀ {_binders(prop.params)}, {prop.lean.strip()}"
+            return f"∀ {_binders(prop.params)}, {prop.lean.strip()}" if prop.params else prop.lean.strip()
     raise KeyError(name)
 
 

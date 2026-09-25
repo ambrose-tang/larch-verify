@@ -23,6 +23,7 @@ from pathlib import Path
 
 from larch.config import Config
 from larch.engine.session import verify_function
+from larch.llm.base import UsageLimitError
 from larch.ui import UI
 
 from .domains import DOMAINS
@@ -30,6 +31,40 @@ from .domains import DOMAINS
 ROOT = Path(__file__).parent
 FUNCS = ROOT / "functions"
 RUNS = ROOT / "runs"
+
+
+_quota_lock = threading.Lock()
+_resume_at = 0.0
+
+
+def pause_until_reset(hint: str) -> None:
+    """Account usage limit hit: every worker waits until the reset time the CLI
+    reported (e.g. "7:40am"), plus a margin, instead of recording bogus failures."""
+    global _resume_at
+    import datetime as dt
+    import re as _re
+
+    now = dt.datetime.now()
+    target = now + dt.timedelta(minutes=30)
+    m = _re.search(r"(\d{1,2})(?::(\d{2}))?\s*([ap]m)", hint or "", _re.I)
+    if m:
+        h = int(m.group(1)) % 12 + (12 if m.group(3).lower() == "pm" else 0)
+        cand = now.replace(hour=h, minute=int(m.group(2) or 0), second=0, microsecond=0)
+        if cand <= now:
+            cand += dt.timedelta(days=1)
+        target = cand + dt.timedelta(minutes=3)
+    with _quota_lock:
+        _resume_at = max(_resume_at, target.timestamp())
+    print(f"  … usage limit reached ({hint or 'no reset time'}); pausing until {dt.datetime.fromtimestamp(_resume_at):%H:%M}", flush=True)
+
+
+def wait_for_quota() -> None:
+    while True:
+        with _quota_lock:
+            remaining = _resume_at - time.time()
+        if remaining <= 0:
+            return
+        time.sleep(min(remaining, 60))
 
 
 def record_from(report, func: str, variant: str, wall: float) -> dict:
@@ -142,8 +177,16 @@ def main(argv=None) -> int:
             artifacts=str(out_dir / "artifacts"),
         )
         cfg.extra["fresh"] = True
-        t0 = time.monotonic()
-        report = verify_function(target, func, cfg, UI())
+        for _attempt in range(4):
+            wait_for_quota()
+            t0 = time.monotonic()
+            try:
+                report = verify_function(target, func, cfg, UI())
+                break
+            except UsageLimitError as e:
+                pause_until_reset(e.reset_hint)
+        else:
+            raise RuntimeError("usage limit persisted across retries")
         rec = record_from(report, func, variant, time.monotonic() - t0)
         with lock:
             with results_path.open("a") as fh:

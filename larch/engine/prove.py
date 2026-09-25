@@ -19,7 +19,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ..lean.lint import lint_lean
-from ..llm.base import BudgetExceeded, LLMError, LLMRequest
+from ..llm.base import UsageLimitError, BudgetExceeded, LLMError, LLMRequest
 from ..prompts import LEMMA_USER, PROVE_SYSTEM, SKETCH_USER_SUFFIX, prove_user
 from ..report import ProofResult
 from ..spec import FormalSpec, model_module, proof_module, spec_constant, statement_text, theorem_header, theorem_name
@@ -202,6 +202,8 @@ class Prover:
                 resp = self.ask(name, LLMRequest(system=PROVE_SYSTEM, prompt=prompt, model=self.cfg.prover, stage="prove", effort=self.effort(i)))
             except BudgetExceeded:
                 break
+            except UsageLimitError:
+                raise
             except LLMError as e:
                 attempts.append(("", f"(LLM error: {e})"))
                 continue
@@ -226,6 +228,8 @@ class Prover:
             prompt = prove_user(self.model_text, name, statement, english, header, automation, attempts[-1:]) + SKETCH_USER_SUFFIX
             try:
                 resp = self.ask(name, LLMRequest(system=PROVE_SYSTEM, prompt=prompt, model=self.cfg.prover, stage="prove-sketch", effort=self.effort(1)))
+            except UsageLimitError:
+                raise
             except (BudgetExceeded, LLMError):
                 break
             code = extract_code_block(resp.text) or ""
@@ -280,6 +284,8 @@ class Prover:
             prompt = LEMMA_USER.format(model_text=self.model_text, context=context, lemma=stmt + " := by\n  sorry", attempts=attempts_txt)
             try:
                 resp = self.ask(name, LLMRequest(system=PROVE_SYSTEM, prompt=prompt, model=self.cfg.prover, stage="prove-lemma", effort=self.effort(0)))
+            except UsageLimitError:
+                raise
             except (BudgetExceeded, LLMError):
                 return None
             code = extract_code_block(resp.text) or ""
@@ -357,6 +363,8 @@ def prove_all(ctx: RunContext, spec: FormalSpec, on_done=None) -> dict[str, Proo
             n = futs[fut]
             try:
                 out[n] = fut.result()
+            except UsageLimitError:
+                raise
             except Exception as e:  # noqa: BLE001 - a crash in one proof must not sink the run
                 out[n] = ProofResult(name=n, status="unproved", error=f"internal error: {e}")
             if on_done:

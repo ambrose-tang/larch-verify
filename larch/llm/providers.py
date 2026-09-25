@@ -13,7 +13,11 @@ from pathlib import Path
 from typing import Callable
 
 from ..util import cache_root, sha256, stable_json
-from .base import LLMError, LLMRequest, LLMResponse, Provider
+import re
+
+from .base import LLMError, LLMRequest, LLMResponse, Provider, UsageLimitError
+
+_LIMIT_RE = re.compile(r"(session|usage|weekly|monthly) limit|hit your .{0,20}limit|limit reached", re.I)
 from .pricing import cost_usd, resolve_model, supports_adaptive_thinking, supports_effort
 
 
@@ -161,6 +165,12 @@ class ClaudeCodeProvider(Provider):
                 if d.get("is_error"):
                     status = d.get("api_error_status")
                     last_err = f"claude CLI error ({status}): {str(d.get('result'))[:300]}"
+                    if _LIMIT_RE.search(str(d.get("result"))):
+                        hint = re.search(r"resets? ([^\n]+)", str(d.get("result")))
+                        raise UsageLimitError(
+                            "Claude usage limit reached" + (f" (resets {hint.group(1).strip()})" if hint else ""),
+                            hint.group(1).strip() if hint else "",
+                        )
                     if status in (429, 500, 502, 503, 504, 529) or status is None:
                         time.sleep(min(60, 4 * (2**attempt)) + random.random())
                         continue

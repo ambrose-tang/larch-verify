@@ -24,6 +24,7 @@ def _parse_target(t: str) -> tuple[Path, list[str]]:
 
 def cmd_verify(args, console: Console) -> int:
     from .engine.session import verify_function
+    from .llm.base import UsageLimitError
     from .py.extract import ExtractError, extract, list_functions
     from .ui import RichUI, UI
 
@@ -72,7 +73,12 @@ def cmd_verify(args, console: Console) -> int:
             except ExtractError as e:
                 console.print(f"[yellow]skipping {path.name}::{func}:[/] {e}")
                 continue
-            report = verify_function(path, func, cfg, ui)
+            try:
+                report = verify_function(path, func, cfg, ui)
+            except UsageLimitError as e:
+                console.print(f"[red]✗ {e}.[/] Nothing was reported for {func}; re-run after the reset, "
+                              "or set ANTHROPIC_API_KEY to use the API instead.")
+                return 3
             ui.final(report)
             reports.append(report)
             if report.findings and args.apply:
