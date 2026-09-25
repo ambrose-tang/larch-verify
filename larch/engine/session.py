@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -38,8 +39,10 @@ def verify_function(path: Path, func: str, cfg: Config, ui: UI | None = None, *,
     path = Path(path)
     report = Report(function=func, file=str(path), config=cfg.to_dict())
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    run_dir = artifacts_root(cfg) / f"{stamp}-{slug(path.stem, 20)}-{slug(func, 30)}"
-    run_dir.mkdir(parents=True, exist_ok=True)
+    # Unique even when several runs of the same function start in the same second
+    # (the workspace holds Lean modules and worker files that must not be shared).
+    artifacts_root(cfg).mkdir(parents=True, exist_ok=True)
+    run_dir = Path(tempfile.mkdtemp(prefix=f"{stamp}-{slug(path.stem, 20)}-{slug(func, 30)}-", dir=artifacts_root(cfg)))
     report.artifacts_dir = str(run_dir)
     ledger = llm.ledger if llm else Ledger(cfg.budget_usd)
     ctx: RunContext | None = None

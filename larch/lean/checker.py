@@ -92,6 +92,16 @@ class Checker:
         if not build or self._build_failed:
             return None
         d.mkdir(parents=True, exist_ok=True)
+        import fcntl
+
+        with open(d / ".build.lock", "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)  # concurrent first runs: build once
+            if exe.exists():
+                self._binary = exe
+                return exe
+            return self._build(d, exe)
+
+    def _build(self, d: Path, exe: Path) -> Path | None:
         (d / "Main.lean").write_text(_ASSET.read_text())
         (d / "lakefile.toml").write_text(
             'name = "larchchecker"\ndefaultTargets = ["larch-checker"]\n\n'

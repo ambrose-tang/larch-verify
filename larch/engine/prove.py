@@ -150,9 +150,13 @@ class Prover:
 
     def remember(self, res: ProofResult) -> None:
         if self.cfg.proof_cache and res.status == "proved" and res.proof:
+            import os
+
             p = self._cache_path(res.name)
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(res.proof)
+            tmp = p.with_suffix(f".tmp{os.getpid()}")
+            tmp.write_text(res.proof)
+            os.replace(tmp, p)
 
     # -- single attempt checking ------------------------------------------------------------
     def try_block(self, name: str, block: str, *, allow_sorry: bool = False, timeout: float = 120.0) -> tuple[bool, str]:

@@ -286,3 +286,20 @@ def test_usage_limit_detected_not_retried(tmp_path: Path):
     with pytest.raises(UsageLimitError) as ei:
         p.complete(LLMRequest(system="s", prompt="p", model="claude-sonnet-5"))
     assert ei.value.reset_hint == "7:40am"
+
+
+def test_run_dirs_are_unique_for_concurrent_runs(tmp_path: Path):
+    """Two runs of the same function starting in the same second must not share a
+    workspace (regression: variants overwrote each other's Lean files)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from larch.config import Config
+    from larch.engine.session import verify_function
+    from larch.ui import UI
+
+    f = tmp_path / "m.py"
+    f.write_text("async def g():\n    pass\n")  # extraction fails fast: no Lean/LLM needed
+    cfg = Config(artifacts=str(tmp_path / "runs"))
+    with ThreadPoolExecutor(4) as ex:
+        reports = list(ex.map(lambda _: verify_function(f, "g", cfg, UI()), range(4)))
+    assert len({r.artifacts_dir for r in reports}) == 4

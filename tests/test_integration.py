@@ -221,3 +221,27 @@ def test_exceptions_modelled_as_none(tmp_path: Path):
     bad = verify_function(f, "safe_div", cfg, llm=fake_div_llm())
     assert bad.verdict == "bug", bad.headline
     assert any("raises_iff_zero" in fi.violated_specs for fi in bad.findings)
+
+
+# -- approved specs are persisted and reused (CI workflow) ------------------------------------------
+
+def test_approved_spec_is_reused_without_llm(tmp_path: Path, monkeypatch):
+    from larch.engine.session import verify_function
+    from larch.ui import UI
+
+    monkeypatch.setenv("LARCH_CACHE_DIR", str(tmp_path / "cache"))
+    (tmp_path / "proj" / ".larch").mkdir(parents=True)  # `larch init` opt-in
+    f = tmp_path / "proj" / "clamp.py"
+    f.write_text(CLAMP_OK)
+    cfg = _cfg(tmp_path)
+    cfg.auto_approve = False  # the (silent) UI approves, like a person pressing [a]
+    cfg.run_mutation = False
+    llm = fake_llm()
+    first = verify_function(f, "clamp", cfg, UI(), llm=llm)
+    assert first.verdict == "passed", first.error
+    saved = list((tmp_path / "proj" / ".larch" / "specs").rglob("clamp.json"))
+    assert saved, "approved spec was not written to .larch/specs"
+    n_formalize = sum(1 for r in llm.provider.requests if r.stage == "formalize")
+    second = verify_function(f, "clamp", cfg, UI(), llm=llm)
+    assert second.verdict == "passed", second.error
+    assert sum(1 for r in llm.provider.requests if r.stage == "formalize") == n_formalize  # no new formalization
