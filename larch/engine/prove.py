@@ -43,6 +43,23 @@ def _def_names(spec: FormalSpec) -> list[str]:
     return out
 
 
+def recursive_defs(code: str) -> list[str]:
+    """Names of definitions in the model code that call themselves (candidates for
+    `fun_induction`). `where` helpers of `model` are returned as `model.<name>`."""
+    defs = list(re.finditer(r"^\s*(?:@\[[^\]]*\]\s*)?(?:private\s+|protected\s+)?def\s+([A-Za-z_][A-Za-z0-9_'.]*)", code, re.M))
+    out: list[str] = []
+    for i, m in enumerate(defs):
+        name = m.group(1)
+        body = code[m.end(): defs[i + 1].start() if i + 1 < len(defs) else len(code)]
+        own, _, where = body.partition("\nwhere")
+        if re.search(r"(?<![A-Za-z0-9_'.])" + re.escape(name.split(".")[-1]) + r"(?![A-Za-z0-9_'])", own):
+            out.append(name)
+        for w in re.findall(r"^\s*(?:where\s+)?([A-Za-z_][A-Za-z0-9_']*)\s*(?::|\()", where, re.M):
+            if re.search(r"(?<![A-Za-z0-9_'.])" + re.escape(w) + r"(?![A-Za-z0-9_'])", where.split(w, 1)[1] if w in where else ""):
+                out.append(f"{name}.{w}")
+    return list(dict.fromkeys(out))
+
+
 def portfolio_scripts(spec: FormalSpec, name: str) -> list[tuple[str, str]]:
     """Generic automation attempts for spec `name` (label, proof body)."""
     header = theorem_header(name)
@@ -73,6 +90,20 @@ def portfolio_scripts(spec: FormalSpec, name: str) -> list[tuple[str, str]]:
             "induction+grind",
             f"{header} := by\n  {intro}\n  {unf}\n  induction {xs}{gen} with\n  | nil => grind [{defs}]\n  | cons hd tl ih => grind [{defs}]",
         ))
+    # Recursive models: induct along the function's own recursion (fun_induction).
+    # String arguments usually reach the helper as `s.toList`; generalize them so the
+    # call has variable arguments.
+    params = spec.params if kind == "postcondition" else next(q for q in spec.active_props() if q.name == name).params
+    str_params = [p for p in params if p.lean_type == "String"]
+    gens = ("\n  try simp only [← String.length_toList] at *" if str_params else "") + "".join(
+        f"\n  try generalize {p.name}.toList = {p.name}_cs" for p in str_params
+    )
+    for f in recursive_defs(spec.model_code)[:2]:
+        unfold_model = "" if f == "model" else "\n  try simp only [model] at *"
+        scripts.append((
+            f"fun_induction {f}",
+            f"{header} := by\n  {intro}\n  {unf}{unfold_model}{gens}\n  fun_induction {f} <;> grind [{defs}]",
+        ))
     scripts.append(("decide", f"{header} := by\n  unfold spec_{name}\n  decide"))
     return scripts
 
@@ -83,6 +114,45 @@ class Prover:
         self.spec = spec
         self.cfg = ctx.cfg
         self.model_text = model_module(spec)
+        self.schedule = [e.strip() for e in (self.cfg.prover_efforts or "").split(",") if e.strip()]
+        self._spent: dict[str, float] = {}
+
+    def ask(self, name: str, req: LLMRequest):
+        """LLM call charged to one spec's budget."""
+        if self._spent.get(name, 0.0) >= self.cfg.proof_budget_usd:
+            raise BudgetExceeded(f"proof budget for {name} exhausted")
+        resp = self.ctx.ask(req)
+        self._spent[name] = self._spent.get(name, 0.0) + resp.cost_usd
+        return resp
+
+    def effort(self, attempt: int) -> str | None:
+        if not self.schedule:
+            return self.cfg.effort
+        return self.schedule[min(attempt, len(self.schedule) - 1)]
+
+    # -- proof cache (keyed by the exact model file + spec name; proofs are re-checked) ------
+    def _cache_path(self, name: str):
+        from ..util import cache_root, sha256
+
+        return cache_root() / "proofs" / sha256(self.model_text, self.ctx.tc.spec)[:20] / f"{name}.lean"
+
+    def cached(self, name: str) -> ProofResult | None:
+        if not self.cfg.proof_cache:
+            return None
+        p = self._cache_path(name)
+        if not p.exists():
+            return None
+        block = p.read_text()
+        ok, _ = self.try_block(name, block)
+        if ok:
+            return ProofResult(name=name, status="proved", method="cached proof (re-checked)", proof=block)
+        return None
+
+    def remember(self, res: ProofResult) -> None:
+        if self.cfg.proof_cache and res.status == "proved" and res.proof:
+            p = self._cache_path(res.name)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(res.proof)
 
     # -- single attempt checking ------------------------------------------------------------
     def try_block(self, name: str, block: str, *, allow_sorry: bool = False, timeout: float = 120.0) -> tuple[bool, str]:
@@ -129,7 +199,7 @@ class Prover:
             if len(attempts) > 2:
                 prompt += f"\n\n({len(attempts) - 2} earlier attempts also failed.)"
             try:
-                resp = self.ctx.ask(LLMRequest(system=PROVE_SYSTEM, prompt=prompt, model=self.cfg.prover, stage="prove", effort=self.cfg.effort))
+                resp = self.ask(name, LLMRequest(system=PROVE_SYSTEM, prompt=prompt, model=self.cfg.prover, stage="prove", effort=self.effort(i)))
             except BudgetExceeded:
                 break
             except LLMError as e:
@@ -155,7 +225,7 @@ class Prover:
         for i in range(2):
             prompt = prove_user(self.model_text, name, statement, english, header, automation, attempts[-1:]) + SKETCH_USER_SUFFIX
             try:
-                resp = self.ctx.ask(LLMRequest(system=PROVE_SYSTEM, prompt=prompt, model=self.cfg.prover, stage="prove-sketch", effort=self.cfg.effort))
+                resp = self.ask(name, LLMRequest(system=PROVE_SYSTEM, prompt=prompt, model=self.cfg.prover, stage="prove-sketch", effort=self.effort(1)))
             except (BudgetExceeded, LLMError):
                 break
             code = extract_code_block(resp.text) or ""
@@ -209,7 +279,7 @@ class Prover:
         for _ in range(max(2, self.cfg.proof_attempts - 1)):
             prompt = LEMMA_USER.format(model_text=self.model_text, context=context, lemma=stmt + " := by\n  sorry", attempts=attempts_txt)
             try:
-                resp = self.ctx.ask(LLMRequest(system=PROVE_SYSTEM, prompt=prompt, model=self.cfg.prover, stage="prove-lemma", effort=self.cfg.effort))
+                resp = self.ask(name, LLMRequest(system=PROVE_SYSTEM, prompt=prompt, model=self.cfg.prover, stage="prove-lemma", effort=self.effort(0)))
             except (BudgetExceeded, LLMError):
                 return None
             code = extract_code_block(resp.text) or ""
@@ -238,7 +308,10 @@ class Prover:
         t0 = time.monotonic()
         strategy = self.cfg.proof_strategy
         automation = None
-        res: ProofResult | None = None
+        res: ProofResult | None = self.cached(name)
+        if res is not None:
+            res.elapsed = time.monotonic() - t0
+            return res
         if strategy.startswith("portfolio"):
             res, automation = self.portfolio(name)
         if res is None:
@@ -249,6 +322,7 @@ class Prover:
             else:
                 res = self.llm_loop(name, automation)
         res.elapsed = time.monotonic() - t0
+        self.remember(res)
         return res
 
 

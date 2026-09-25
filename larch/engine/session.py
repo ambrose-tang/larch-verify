@@ -28,7 +28,7 @@ from .store import load_approved, save_approved
 
 
 def artifacts_root(cfg: Config) -> Path:
-    return Path(cfg.artifacts).expanduser() if cfg.artifacts else cache_root() / "runs"
+    return (Path(cfg.artifacts).expanduser() if cfg.artifacts else cache_root() / "runs").resolve()
 
 
 def verify_function(path: Path, func: str, cfg: Config, ui: UI | None = None, *, llm: LLM | None = None,

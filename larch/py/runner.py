@@ -66,7 +66,7 @@ class WorkerError(RuntimeError):
 class PythonRunner:
     def __init__(self, python: str, workdir: Path):
         self.python = python
-        self.workdir = workdir
+        self.workdir = Path(workdir).resolve()
         self.workdir.mkdir(parents=True, exist_ok=True)
         self._counter = itertools.count(1)
         self._lock = threading.Lock()

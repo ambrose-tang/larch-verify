@@ -32,6 +32,7 @@ def cmd_verify(args, console: Console) -> int:
         tests=args.tests, mutants=args.mutants, budget_usd=args.budget, python=args.python,
         artifacts=args.artifacts, formalize_mode=args.formalize_mode, proof_strategy=args.proof_strategy,
         test_strategy=args.test_strategy, seed=args.seed, proof_attempts=args.proof_attempts,
+        prover_efforts=args.prover_efforts,
     )
     if args.yes:
         overrides["auto_approve"] = True
@@ -228,6 +229,7 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--proof-strategy", choices=["portfolio", "llm", "portfolio+llm", "portfolio+sketch"])
     v.add_argument("--test-strategy", choices=["typed", "llm", "mixed"])
     v.add_argument("--proof-attempts", type=int)
+    v.add_argument("--prover-efforts", help='per-attempt reasoning effort, e.g. "medium,medium,high,high"')
     v.add_argument("--seed", type=int)
     v.add_argument("--cache", action="store_true", help="cache LLM responses on disk")
     v.add_argument("--json", help="write the report(s) as JSON to this path")

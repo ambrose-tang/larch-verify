@@ -234,6 +234,16 @@ you are given. Do not repeat or change the definitions; they are already importe
 - `match` on `result` in a postcondition: use `split` or `cases` on the model output.
 - Keep proofs robust: prefer `grind`/`omega`/`simp` finishing steps over long manual
   term proofs. Do not rely on lemma names you are unsure exist.
+
+## Core lemmas that exist in this Lean version (use by name with `simp`/`rw`/`exact`)
+`List.mergeSort_perm`, `List.pairwise_mergeSort` (sortedness of `mergeSort`),
+`List.Perm.length_eq`, `List.perm_iff_count`, `List.Perm.trans`, `List.perm_comm`,
+`List.Perm.refl`, `List.count_append`, `List.sum_append`, `List.mem_filter`,
+`List.length_filter_le`, `List.filter_append`, `List.getElem_mem`, `List.pairwise_append`,
+`List.pairwise_cons`, `List.Pairwise.imp`, `List.Pairwise.sublist`, `List.take_append_drop`,
+`List.reverse_append`, `List.mem_reverse`, `List.length_reverse`, `List.flatMap_append`,
+`List.replicate_succ`, `List.mem_eraseDups`, `List.eraseDups_append`, `Nat.sqrt_le`,
+`Nat.lt_succ_sqrt`, `Int.fdiv_eq_ediv`, `Int.emod_add_ediv_mul`, `Int.fmod_nonneg`.
 """
 
 

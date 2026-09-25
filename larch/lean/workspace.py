@@ -37,7 +37,7 @@ class LeanWorkspace:
     HARNESS = "LarchHarness"
 
     def __init__(self, root: Path, toolchain: LeanToolchain):
-        self.root = root
+        self.root = Path(root).resolve()
         self.tc = toolchain
         self.build = root / "build"
         self.root.mkdir(parents=True, exist_ok=True)

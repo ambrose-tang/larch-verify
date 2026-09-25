@@ -24,6 +24,9 @@ class Config:
 
     # Effort knobs
     proof_attempts: int = 4
+    prover_efforts: str = ""  # per-attempt effort schedule, e.g. "medium,medium,high,high" (empty: `effort`)
+    proof_cache: bool = True  # reuse proofs of identical (model, spec) pairs; always re-checked
+    proof_budget_usd: float = 0.75  # stop working on one spec once its LLM calls cost this much
     formalize_repairs: int = 3
     model_repairs: int = 2
     tests: int = 2000
