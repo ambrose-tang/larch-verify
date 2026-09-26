@@ -52,6 +52,8 @@ class FixProposal:
     validation: str = ""
     patch_path: str = ""
     applied: bool = False
+    new_source: str = ""  # full patched module source (what was validated)
+    base_sha256: str = ""  # hash of the file content the fix was validated against
 
 
 @dataclass

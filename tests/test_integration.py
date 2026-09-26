@@ -298,3 +298,23 @@ def test_unfixable_spec_is_dropped_not_fatal(tmp_path: Path):
     assert report.verdict in ("passed", "partial"), (report.error, report.headline)
     assert "always_zero" not in [s.name for s in report.specs]
     assert any("dropped spec `always_zero`" in w for w in report.warnings)
+
+
+def test_apply_writes_validated_fix_only_if_file_unchanged(tmp_path: Path):
+    from rich.console import Console
+
+    from larch.cli import _maybe_apply
+    from larch.engine.session import verify_function
+
+    f = tmp_path / "clamp.py"
+    f.write_text(CLAMP_BUG)
+    cfg = _cfg(tmp_path)
+    cfg.run_mutation = False
+    report = verify_function(f, "clamp", cfg, llm=fake_llm())
+    assert report.findings[0].fix and report.findings[0].fix.validated
+    f.write_text(CLAMP_BUG + "\n# edited meanwhile\n")
+    _maybe_apply(report, f, Console(file=open("/dev/null", "w")), assume_yes=True)
+    assert "hi + 1" in f.read_text()  # stale: not applied
+    f.write_text(CLAMP_BUG)
+    _maybe_apply(report, f, Console(file=open("/dev/null", "w")), assume_yes=True)
+    assert f.read_text() == CLAMP_OK

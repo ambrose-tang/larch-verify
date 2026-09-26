@@ -94,9 +94,15 @@ def cmd_verify(args, console: Console) -> int:
 
 
 def _maybe_apply(report, path: Path, console: Console, assume_yes: bool) -> None:
+    from .util import sha256
+
     fix = next((f.fix for f in report.findings if f.fix and f.fix.validated), None)
-    if fix is None:
+    if fix is None or not fix.new_source:
         console.print("[yellow]No validated fix to apply.[/]")
+        return
+    current = path.read_text()
+    if fix.base_sha256 and sha256(current) != fix.base_sha256:
+        console.print(f"[yellow]{path} changed since it was verified; not applying. Re-run larch.[/]")
         return
     if not assume_yes:
         if not sys.stdin.isatty():
@@ -105,14 +111,11 @@ def _maybe_apply(report, path: Path, console: Console, assume_yes: bool) -> None
         ans = console.input(f"  Apply the validated fix to {path}? [y/N] › ").strip().lower()
         if ans not in ("y", "yes"):
             return
-    import subprocess
-
-    r = subprocess.run(["patch", "-p1", "--forward", str(path)], input=fix.diff, text=True, capture_output=True)
-    if r.returncode == 0:
-        fix.applied = True
-        console.print(f"[green]Applied fix to {path}.[/]")
-    else:
-        console.print(f"[red]Could not apply the patch:[/] {r.stdout or r.stderr}")
+    tmp = path.with_suffix(path.suffix + ".larch-tmp")
+    tmp.write_text(fix.new_source)
+    os.replace(tmp, path)
+    fix.applied = True
+    console.print(f"[green]Applied the validated fix to {path}.[/]")
 
 
 def _summary_table(reports, console: Console) -> None:

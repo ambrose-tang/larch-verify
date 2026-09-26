@@ -148,9 +148,12 @@ def propose_fix(ctx: RunContext, spec: FormalSpec, recs: list[dict]) -> FixPropo
             fromfile=f"a/{info.path.name}", tofile=f"b/{info.path.name}",
         ))
         if res.get("ok") and bad == 0 and counts.get("agree", 0) > 0:
+            from ..util import sha256
+
             return FixProposal(
                 explanation=str(d.get("explanation", "")).strip(), diff=diff, validated=True,
                 validation=f"agrees with the verified model on {counts.get('agree', 0)} inputs",
+                new_source=new_source, base_sha256=sha256(info.module_source),
             )
         m = res.get("minimal") or (res.get("failures") or [{}])[0]
         feedback = (
