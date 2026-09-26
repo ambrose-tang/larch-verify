@@ -84,7 +84,7 @@ class RunContext:
                 "exceptions": spec.exceptions,
                 "posts": [p.name for p in spec.active_posts()],
             },
-            "harness": {"cmd": self.ws.harness_cmd(), "env": self.ws.harness_env(), "cwd": str(self.ws.root)},
+            "harness": {"cmd": self.ws.harness_cmd(), "env": self.ws.harness_env(), "cwd": str(self.ws.root), "timeout": 3.0},
             "target": {"path": str(self.info.path), "function": self.info.name},
             "strategy": {"mode": self.cfg.test_strategy, "code": spec.strategy_code},
             "edge_cases": spec.edge_cases if self.cfg.test_strategy != "typed" else [],

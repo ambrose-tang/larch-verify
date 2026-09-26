@@ -159,10 +159,12 @@ def sanity_check(ctx: RunContext, spec: FormalSpec) -> tuple[list[str], Sanity]:
     if counts.get("harness_error"):
         errs = [f.get("error") for f in res.get("failures", []) if f.get("kind") == "harness_error"][:2]
         problems.append(f"evaluating the model failed on some inputs: {errs}")
-    if counts.get("model_timeout", 0) > total * 0.05:
+    if res.get("slow_model_inputs") or counts.get("model_timeout", 0) > total * 0.05:
+        ex = "; ".join(f"({a})" for a in res.get("slow_model_inputs", [])) or "several inputs"
         problems.append(
-            f"the model timed out on {counts['model_timeout']} of {total} inputs; make it efficient "
-            "(no recursion proportional to integer magnitudes) or bound inputs in the precondition"
+            f"the Lean model takes more than 3 seconds on {ex}. Make it efficient: no recursion or "
+            "iteration proportional to an integer's magnitude (use Nat.gcd, Nat.sqrt, closed forms, or "
+            "recursion on list structure), or restrict the input domain in the precondition"
         )
     mv = res.get("minimal_model_violation") or (res.get("model_violations") or [None])[0]
     if mv:

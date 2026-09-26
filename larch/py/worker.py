@@ -317,6 +317,7 @@ def job_drt(job: dict, harness: HarnessClient) -> dict:
     failures: list[dict] = []
     model_violations: list[dict] = []
     agreeing: list[dict] = []
+    slow_models: list = []
     stopped_early = None
     deadline = t0 + float(job.get("time_budget", 600))
     for args in inputs:
@@ -338,6 +339,11 @@ def job_drt(job: dict, harness: HarnessClient) -> dict:
         if ev.timeouts >= int(job.get("max_timeouts", 4)):
             stopped_early = f"stopped after {ev.timeouts} timeouts (implementation appears to hang)"
             break
+        if k == "model_timeout":
+            slow_models.append(args)
+            if len(slow_models) >= int(job.get("max_model_timeouts", 3)):
+                stopped_early = "the Lean model is too slow on some inputs"
+                break
         if time.monotonic() > deadline:
             stopped_early = "time budget exhausted"
             break
@@ -350,6 +356,7 @@ def job_drt(job: dict, harness: HarnessClient) -> dict:
         "stopped_early": stopped_early,
         "failures": failures,
         "model_violations": model_violations,
+        "slow_model_inputs": [", ".join(safe_repr(a) for a in x) for x in slow_models[:3]],
     }
 
     # Minimal counterexamples (hypothesis shrinking) for the report.
