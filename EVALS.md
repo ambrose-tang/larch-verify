@@ -69,4 +69,48 @@ comparisons depend on. All are fixed, and runs from before each fix were discard
 
 ## Results
 
-(filled in as experiments complete)
+All runs: Sonnet 5 unless stated. Every row is the full benchmark (48 bug variants + 24
+correct variants) unless stated.
+
+### A. How to derive the model: from the documentation, or from the code?
+
+The central design question in verification-guided development: what the reference
+model is written *from*. Three prompting approaches, same model (Sonnet 5, medium
+effort), bug detection only (no proofs):
+
+- **intent**: the formalizer sees only the signature, the docstring and the
+  surrounding module. The implementation body is hidden.
+- **hybrid**: it sees the docstring and the implementation, and is told to model the
+  documented intent and use the code only for conventions.
+- **transliterate**: it translates the implementation into Lean faithfully. This is the
+  "prove things about a translation of the code" approach.
+
+| approach | bugs caught | not visible in docstring | rare (<5% of inputs) | false alarms | errors | cost / fn | time / fn |
+|---|---|---|---|---|---|---|---|
+| intent | **47/48 (98%)** | 27/28 | 8/9 | **0/24** | 2* | $0.086 | 29 s |
+| hybrid | 46/48 (96%) | 28/28 | 9/9 | **0/24** | 0 | **$0.082** | 28 s |
+| transliterate | 6/48 (12%) | 2/28 | 1/9 | 0/24 | 0 | $0.109 | 84 s |
+
+\* Both intent errors were `compare_versions` variants. The model had copied JSON escaping
+into its Lean code (`splitOn \\".\\"`), which Larch failed to undo at the time.
+That is fixed now: a lexer detects a backslash outside any Lean literal. The one
+intent "miss" is one of those two errored variants.
+
+**Reading.**
+- *Transliteration defeats differential testing.* A model translated from buggy code
+  contains the bug, so the implementation and model always agree. The 6 bugs it did
+  catch came from postconditions contradicting the transliterated behaviour. This is
+  the quantitative version of Cedar's lesson: the model must be an independent
+  statement of intent.
+- *Hybrid copies code-level mistakes the docstring would have prevented.* Its only
+  misses are both `int_to_roman` variants. It copied the implementation's symbol table
+  (missing `IV`, or misordered `XC`), and none of its specs (round-trip decoding, valid
+  characters, length) distinguishes `IIII` from `IV`, even though the docstring says
+  `4 -> "IV"`.
+- *Intent never saw the code, so it could not copy it*, and it had no false alarms here.
+  Every benchmark docstring states the behaviour, which favours intent. Real code is often
+  undocumented, and that case is measured in Experiment N.
+
+**Decision.** The default is `--formalize-mode auto`: *intent* when the function has
+real documentation (8 or more words), *hybrid* otherwise. Transliteration is kept only
+as a baseline.
