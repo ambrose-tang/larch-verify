@@ -119,6 +119,7 @@ def main(argv=None) -> int:
     ap.add_argument("--proof-strategy", default="portfolio+llm")
     ap.add_argument("--proof-attempts", type=int, default=4)
     ap.add_argument("--prover-efforts", default="", help='per-attempt effort schedule, e.g. "medium,medium,high,high"')
+    ap.add_argument("--proof-budget", type=float, default=0.30, help="max LLM spend per spec (USD)")
     ap.add_argument("--test-strategy", default="mixed")
     ap.add_argument("--tests", type=int, default=2000)
     ap.add_argument("--mutants", type=int, default=40)
@@ -172,7 +173,7 @@ def main(argv=None) -> int:
             test_strategy=args.test_strategy, tests=args.tests, mutants=args.mutants,
             run_proofs=not args.no_proofs, run_mutation=not args.no_mutation, propose_fixes=not args.no_fix,
             adjudicate=not args.no_adjudicate, auto_approve=True, cache=True, budget_usd=8.0,
-            prover_efforts=args.prover_efforts,
+            prover_efforts=args.prover_efforts, proof_budget_usd=args.proof_budget,
             proof_cache=False,  # experiments must not reuse proofs found by other experiments
             artifacts=str(out_dir / "artifacts"),
         )
