@@ -279,3 +279,22 @@ def test_documented_example_catches_copied_bug(tmp_path: Path):
     assert report.verdict == "bug", (report.error, report.headline)
     # the sanity check rejected the bug-copying model, forcing a repair round
     assert sum(1 for r in llm.provider.requests if r.stage == "formalize") == 2
+
+
+def test_unfixable_spec_is_dropped_not_fatal(tmp_path: Path):
+    """If one spec stays false through every repair round, drop it and continue."""
+    from larch.engine.session import verify_function
+
+    bad = dict(FORMALIZATION)
+    bad["postconditions"] = FORMALIZATION["postconditions"] + [
+        {"name": "always_zero", "english": "wrong on purpose", "lean": "result = 0"}]
+
+    llm = LLM(FakeProvider(lambda req: bad if req.stage == "formalize" else "```lean\n```"), Ledger())
+    cfg = _cfg(tmp_path)
+    cfg.run_mutation = False
+    f = tmp_path / "clamp.py"
+    f.write_text(CLAMP_OK)
+    report = verify_function(f, "clamp", cfg, llm=llm)
+    assert report.verdict in ("passed", "partial"), (report.error, report.headline)
+    assert "always_zero" not in [s.name for s in report.specs]
+    assert any("dropped spec `always_zero`" in w for w in report.warnings)

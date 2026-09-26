@@ -244,6 +244,49 @@ def sanity_check(ctx: RunContext, spec: FormalSpec) -> tuple[list[str], Sanity]:
     return problems, san
 
 
+_BAD_SPEC_PATTERNS = [
+    re.compile(r"Larch\.(?:post|prop)_([a-z][a-z0-9_]*)"),
+    re.compile(r"violates its own spec\(s\) \[([^\]]*)\]"),
+    re.compile(r"Property `([a-z][a-z0-9_]*)`"),
+    re.compile(r"spec `?([a-z][a-z0-9_]*)`? (?:is|was)"),
+]
+
+
+def _quarantine(ctx: RunContext, spec: FormalSpec, problems: list[str], step=None):
+    """Repair budget exhausted. If every remaining problem is attributable to specific
+    specs, drop those specs (with a warning) rather than failing the whole run."""
+    names = set(spec.spec_names())
+    bad: set[str] = set()
+    for p in problems:
+        found = set()
+        for pat in _BAD_SPEC_PATTERNS:
+            for m in pat.finditer(p):
+                for n in re.findall(r"[a-z][a-z0-9_]*", m.group(1)):
+                    if n in names:
+                        found.add(n)
+        if not found:
+            return None  # a problem not tied to a spec (e.g. the model itself): cannot rescue
+        bad |= found
+    keep = names - bad
+    if not bad or not keep:
+        return None
+    trimmed = FormalSpec.from_json(spec.to_json())
+    trimmed.postconditions = [p for p in trimmed.postconditions if p.name in keep]
+    trimmed.properties = [q for q in trimmed.properties if q.name in keep]
+    if step:
+        step.update(f"dropping {len(bad)} inconsistent spec(s)")
+    if build_lean(ctx, trimmed):
+        return None
+    problems2, san = sanity_check(ctx, trimmed)
+    if problems2:
+        return None
+    san.warnings = list(san.warnings) + [
+        f"dropped spec `{n}`: it could not be made consistent with the model (it was false or not checkable)"
+        for n in sorted(bad)
+    ]
+    return trimmed, san
+
+
 def _repair_generator(ctx: RunContext, spec: FormalSpec, san: Sanity) -> tuple[FormalSpec, Sanity]:
     """One cheap, targeted call to fix only the input generator. If it does not help,
     keep the original (DRT then relies on the type-directed half of the mix)."""
@@ -310,6 +353,10 @@ def formalize(ctx: RunContext, *, feedback: str | None = None, previous: FormalS
                 spec, san = _repair_generator(ctx, spec, san)
             return spec, san, rounds
         last_problems = problems
+        if attempt == cfg.formalize_repairs and spec is not None:
+            rescued = _quarantine(ctx, spec, problems, step)
+            if rescued is not None:
+                return rescued[0], rescued[1], rounds
         prompt = base_prompt + "\n" + FORMALIZE_REPAIR.format(
             previous=render_previous(data), problems="\n".join(f"- {p}" for p in problems)
         )

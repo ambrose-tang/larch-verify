@@ -117,6 +117,10 @@ def _run(ctx: RunContext, report: Report, spec_override: FormalSpec | None) -> N
                 n_post, n_prop = len(spec.active_posts()), len(spec.active_props())
                 st.done(f"{n_post} postconditions, {n_prop} properties" + (f" · {rounds} rounds" if rounds > 1 else ""))
                 st.line(f"model compiles · tested on {san.valid_inputs} inputs, no spec violations by the model")
+                for w in san.warnings:
+                    if w.startswith("dropped spec"):
+                        st.line(f"[yellow]{w}[/]")
+                        report.warnings.append(w)
                 if san.impl_disagreements:
                     st.line(f"[yellow]implementation already disagrees with the model on {san.impl_disagreements} of 200 quick-test inputs[/]")
             if cfg.auto_approve:
