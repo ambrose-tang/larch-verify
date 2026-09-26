@@ -55,7 +55,7 @@ and `Optional`, and that may raise documented exceptions. Floats, dicts, classes
 state, I/O, async and generators are rejected with a clear message.
 
 **Why.** These types map *exactly* onto Lean (`Int`, `Bool`, `String`, `Char`, `List`,
-`×`, `Option`, `Except`). Python ints are unbounded like Lean's `Int`, so no overflow
+`×`, `Option`), and raising maps to `none` (see D14). Python ints are unbounded like Lean's `Int`, so no overflow
 modelling is needed. The two-way JSON codec is total and unambiguous
 (`larch/lean/types.py`), which rules out a whole class of false alarms. Floats would
 need a rounding-aware model and proofs about IEEE-754, which is a separate product.
@@ -213,7 +213,23 @@ common, so a survivor is re-tested before it is blamed on the specs.
 unproved. `error` (3). The word "verified" appears only for individual specs that passed
 the checker.
 
-## D14. Name
+## D14. Exceptions are modelled as `Option`; spec problems are not code bugs
+
+**Decision.** A function that raises by design is modelled as `model : … → Option T`,
+where `none` means "raises" (the exception type is not compared). Separately, when
+the implementation violates an approved spec on some input, Larch reports a bug only
+if the verified model satisfies that spec on the same input. If the model violates it
+too, the spec is wrong, and Larch warns about the spec instead.
+
+**Why.** The first design used `Except String T`. Specs then naturally matched on the
+result (`match result with …`), which is not decidable, and `Except` has no decidable
+equality: whole repair rounds were lost to this in the pilot. `Option` has decidable
+equality and membership (`∀ v ∈ result, …`). The second rule comes from a benchmark
+false alarm. The formalizer bounded an exponent (`∃ k < 64, n = 2^k`) to make a spec
+decidable, and at `n = 2^64` the implementation and the model agreed but *both*
+violated the spec. Blaming the code there would be wrong.
+
+## D15. Name
 
 **Larch**: a tree, as a nod to Cedar. Larch was also a family of formal specification
 languages from the 1980s.
