@@ -114,3 +114,47 @@ re-run both variants passed: the correct one was clean and the bug was caught.
 **Decision.** The default is `--formalize-mode auto`: *intent* when the function has
 real documentation (8 or more words), *hybrid* otherwise. Transliteration is kept only
 as a baseline.
+
+### D. Proving: automation, direct LLM repair, or sketch decomposition?
+
+These runs cover the 24 correct variants, 122 approved specs, with the formalizations
+shared with Experiment A. LLM attempts run at `low` effort (the pilot ruled out `high`),
+with 3 attempts and a $0.30 budget per spec. Every "proved" passed the out-of-process
+checker.
+
+| strategy | specs proved | functions fully proved | proof cost / fn | proof time / fn |
+|---|---|---|---|---|
+| portfolio only (no LLM) | 61/122 (50%) | 5/24 | **$0.00** | 30 s |
+| portfolio → LLM repair loop | **82/122 (67%)** | **9/24** | $0.47 | 296 s |
+| portfolio → sketch decomposition | 74/122 (61%) | 6/24 | $0.46 | 297 s |
+
+- **The free portfolio does half the work.** `grind` alone closes 39 specs,
+  `simp_all`+`omega` 10, and the new `fun_induction` scripts 6.
+- **Direct repair beat decomposition** at the same budget: it added 21 proofs at
+  $0.54 each, against 13 proofs at $0.85 each for the sketch. Sketches spend budget on
+  helper lemmas that are often individually as hard as the goal, and a single failed
+  lemma sinks the whole sketch.
+- What stays unproved is genuinely hard in core Lean without Mathlib: sortedness plus
+  permutation of `merge_intervals`, `isqrt`'s `n < (r+1)²` (non-linear arithmetic), and
+  string-character arithmetic in `caesar_shift`. An unproved spec is still *tested*
+  against the implementation on every run. It just is not reported as proved.
+
+**Decision.** `portfolio+llm` is the default, with `low` effort for proof attempts.
+`portfolio+sketch` remains an option.
+
+### E. Test generation: type-directed, LLM-written, or mixed?
+
+Each run has the same formalizations (cached) and 2000 inputs per function.
+
+| generator | bugs caught | not visible in docstring | rare (<5%) | false alarms | cost / fn |
+|---|---|---|---|---|---|
+| type-directed only (Hypothesis strategies from the Lean types) | 39/48 (81%) | 23/28 | 6/9 | 0/24 | $0.082 |
+| LLM-written only | **48/48** | 28/28 | 9/9 | 0/24 | $0.078 |
+| mixed (2/3 LLM, 1/3 type-directed; default) | **48/48** | 28/28 | 9/9 | 0/24 | $0.081 |
+
+The type-directed generator misses bugs that need *structured* inputs: well-formed
+version strings, policy tuples, digit strings, century years in February, and signed
+integer literals. Random strings almost never satisfy those preconditions. LLM-written
+generators build them directly. **Decision:** keep `mixed`. It ties the LLM-only
+generator here, and its type-directed third still covers what the LLM does not think
+of, like the `2^64` boundary that exposed a wrong spec during development.
