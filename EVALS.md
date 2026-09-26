@@ -87,14 +87,14 @@ effort), bug detection only (no proofs):
 
 | approach | bugs caught | not visible in docstring | rare (<5% of inputs) | false alarms | errors | cost / fn | time / fn |
 |---|---|---|---|---|---|---|---|
-| intent | **47/48 (98%)** | 27/28 | 8/9 | **0/24** | 2* | $0.086 | 29 s |
+| intent | **48/48 (100%)** | 28/28 | 9/9 | **0/24** | 0* | $0.081 | 27 s |
 | hybrid | 46/48 (96%) | 28/28 | 9/9 | **0/24** | 0 | **$0.082** | 28 s |
 | transliterate | 6/48 (12%) | 2/28 | 1/9 | 0/24 | 0 | $0.109 | 84 s |
 
-\* Both intent errors were `compare_versions` variants. The model had copied JSON escaping
-into its Lean code (`splitOn \\".\\"`), which Larch failed to undo at the time.
-That is fixed now: a lexer detects a backslash outside any Lean literal. The one
-intent "miss" is one of those two errored variants.
+\* In the first pass, two intent variants (`compare_versions`) ended in errors. The
+model had copied JSON escaping into its Lean code (`splitOn \\".\\"`). A lexer now
+detects a backslash outside any Lean literal and undoes one level of escaping, and on
+re-run both variants passed: the correct one was clean and the bug was caught.
 
 **Reading.**
 - *Transliteration defeats differential testing.* A model translated from buggy code
