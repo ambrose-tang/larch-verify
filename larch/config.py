@@ -13,12 +13,12 @@ class Config:
     provider: str = "auto"  # auto | anthropic | claude-code
     model: str = "claude-sonnet-5"  # formalization / adjudication / fixes
     prover_model: str | None = None  # defaults to `model`
-    effort: str | None = "high"
+    effort: str | None = "medium"
     cache: bool = False
     budget_usd: float = 5.0
 
     # Approaches (see EVALS.md for the comparison that picked these)
-    formalize_mode: str = "hybrid"  # hybrid | intent | transliterate
+    formalize_mode: str = "auto"  # auto (intent if documented, else hybrid) | hybrid | intent | transliterate
     doc_examples: bool = False  # extract documented examples and check model + implementation against them
     proof_strategy: str = "portfolio+llm"  # llm | portfolio+llm | portfolio+sketch
     test_strategy: str = "mixed"  # typed | llm | mixed

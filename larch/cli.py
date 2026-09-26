@@ -223,7 +223,7 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--reuse", action="store_true", help="reuse previously approved specs without asking")
     v.add_argument("--fresh", action="store_true", help="ignore previously approved specs")
     v.add_argument("--apply", action="store_true", help="apply a validated fix to your file (asks first)")
-    v.add_argument("--model", help="LLM for formalization/adjudication/fixes (default claude-sonnet-5)")
+    v.add_argument("--model", help="LLM for formalization, adjudication and fixes (default claude-sonnet-5)")
     v.add_argument("--prover-model", help="LLM for proofs (default: same as --model)")
     v.add_argument("--provider", choices=["auto", "anthropic", "claude-code"])
     v.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"])

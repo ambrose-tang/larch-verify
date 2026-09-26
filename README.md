@@ -106,12 +106,12 @@ approved.
 |---|---|---|
 | `--model` | `claude-sonnet-5` | LLM used for formalization, adjudication and fixes |
 | `--prover-model` | same as `--model` | LLM used for proofs |
-| `--effort` | `high` | reasoning effort (`low`…`max`) |
+| `--effort` | `medium` | reasoning effort for formalization (`low`…`max`) |
 | `--tests N` | 2000 | random inputs for differential testing |
 | `--mutants N` | 40 | injected bugs for mutation analysis |
 | `--budget USD` | 5 | hard cap on LLM spend per function |
 | `--python PATH` | project `.venv` | interpreter used to run your code |
-| `--formalize-mode` | `hybrid` | `hybrid` \| `intent` \| `transliterate` (see EVALS.md) |
+| `--formalize-mode` | `auto` | `auto` (intent when documented, else hybrid) \| `intent` \| `hybrid` \| `transliterate` (see EVALS.md) |
 | `--proof-strategy` | `portfolio+llm` | `llm` \| `portfolio+llm` \| `portfolio+sketch` |
 | `--test-strategy` | `mixed` | `typed` \| `llm` \| `mixed` input generation |
 
