@@ -337,3 +337,19 @@ def test_unescape_copied_json_escaping(src, want):
     from larch.util import unescape_code
 
     assert unescape_code(src) == want
+
+
+def test_auth_failure_pauses_instead_of_failing(tmp_path: Path, monkeypatch):
+    import json as _json
+    import stat
+
+    import larch.llm.providers as prov
+    from larch.llm.base import LLMRequest, UsageLimitError
+
+    monkeypatch.setattr(prov.time, "sleep", lambda s: None)
+    fake = tmp_path / "claude"
+    (tmp_path / "p.json").write_text(_json.dumps({"is_error": True, "api_error_status": 403, "result": "Failed to authenticate. API Error: 403"}))
+    fake.write_text(f"#!/bin/sh\ncat > /dev/null\ncat '{tmp_path / 'p.json'}'\n")
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    with pytest.raises(UsageLimitError):
+        prov.ClaudeCodeProvider(binary=str(fake)).complete(LLMRequest(system="s", prompt="p", model="claude-sonnet-5"))

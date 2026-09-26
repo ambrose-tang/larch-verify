@@ -144,6 +144,7 @@ class ClaudeCodeProvider(Provider):
         env = {k: v for k, v in os.environ.items() if k not in ("CLAUDECODE",)}
         last_err = "unknown error"
         _CLI_SLOTS.acquire()
+        auth_failures = 0
         try:
             for attempt in range(5):
                 t0 = time.monotonic()
@@ -171,6 +172,14 @@ class ClaudeCodeProvider(Provider):
                             "Claude usage limit reached" + (f" (resets {hint.group(1).strip()})" if hint else ""),
                             hint.group(1).strip() if hint else "",
                         )
+                    if status in (401, 403) or "authenticate" in str(d.get("result")).lower():
+                        # Seen around session-limit transitions: the login is briefly rejected.
+                        # Never treat it as a property of the request; back off, then pause.
+                        auth_failures += 1
+                        if auth_failures >= 3:
+                            raise UsageLimitError("Claude Code authentication failed (is `claude` logged in?)", "")
+                        time.sleep(30 * auth_failures)
+                        continue
                     if status in (429, 500, 502, 503, 504, 529) or status is None:
                         time.sleep(min(60, 4 * (2**attempt)) + random.random())
                         continue
