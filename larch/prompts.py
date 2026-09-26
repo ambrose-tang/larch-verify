@@ -491,3 +491,29 @@ Previous generator:
 Problem: {problem}
 
 Write a corrected generator."""
+
+
+FORMALIZE_EXAMPLES_ADDENDUM = """
+
+## Documented examples
+Also fill `documented_examples`: a JSON array of every concrete input/output example the
+developer wrote in the documentation, e.g. `[{"args": [4], "expected": "IV"}]` for
+"4 -> IV". Use `"expected": "raises"` for a documented error. Only examples that are
+explicitly written down; never invent or compute new ones. Use `[]` if there are none.
+Larch checks your model and the implementation against each of them, so your model
+must agree with every documented example.
+"""
+
+
+def formalize_schema(with_examples: bool) -> dict:
+    if not with_examples:
+        return FORMALIZE_SCHEMA
+    import copy
+
+    sch = copy.deepcopy(FORMALIZE_SCHEMA)
+    sch["properties"]["documented_examples"] = {
+        "type": "string",
+        "description": 'JSON array of {"args": [...], "expected": value or "raises"} taken verbatim from the documentation',
+    }
+    sch["required"] = sch["required"] + ["documented_examples"]
+    return sch

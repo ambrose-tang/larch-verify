@@ -495,6 +495,67 @@ def job_mutants(job: dict, harness: HarnessClient, result_path: str) -> dict:
     return {"ok": True, "valid_inputs": len(valid), "mutants": out, "strategy_note": note, "elapsed": time.monotonic() - t0}
 
 
+def job_examples(job: dict, harness: HarnessClient) -> dict:
+    """Check documented examples (args -> expected, or "raises") against the model
+    and, unless model_only, against the implementation."""
+    model_only = bool(job.get("model_only"))
+    fn = None
+    if not model_only:
+        tgt = job["target"]
+        fn = load_function(tgt["path"], tgt["function"], tgt.get("source"))
+    ev = Evaluator(job, harness, fn)
+    out = []
+    for ex in job.get("examples", []):
+        args = list(ex.get("args", []))
+        exp = ex.get("expected")
+        raises = exp == "raises"
+        rec: dict = {"args_repr": ", ".join(safe_repr(a) for a in args), "expected": "raises" if raises else safe_repr(exp)}
+        enc = ev.encode_args(args)
+        if enc is None:
+            rec["skipped"] = "arguments do not fit the parameter types"
+            out.append(rec)
+            continue
+        exp_json = None
+        if not raises:
+            try:
+                exp_json = encode(exp, ev.ret)
+            except EncodeError as e:
+                rec["skipped"] = f"expected value does not fit the return type: {e}"
+                out.append(rec)
+                continue
+        try:
+            resp = harness.request({"op": "case", "args": enc})
+        except HarnessError as e:
+            rec["skipped"] = f"model evaluation failed: {e}"
+            out.append(rec)
+            continue
+        if not resp.get("pre"):
+            rec["skipped"] = "outside the precondition"
+            out.append(rec)
+            continue
+        mj = resp.get("model")
+        model_raises = ev.exceptions and isinstance(mj, dict) and "error" in mj
+        model_val = mj.get("ok") if (ev.exceptions and isinstance(mj, dict)) else mj
+        rec["model"] = ev.model_repr(mj)
+        rec["model_ok"] = (raises and model_raises) or (not raises and not model_raises and model_val == exp_json)
+        if fn is not None:
+            r = call_impl(fn, args, ev.call_timeout)
+            if r["status"] == "ok":
+                rec["impl"] = safe_repr(r["value"])
+                try:
+                    rec["impl_ok"] = (not raises) and encode(r["value"], ev.ret) == exp_json
+                except EncodeError:
+                    rec["impl_ok"] = False
+            elif r["status"] == "exception":
+                rec["impl"] = f"raised {r['exc']}"
+                rec["impl_ok"] = raises
+            else:
+                rec["impl"] = f"did not return within {ev.call_timeout:g}s"
+                rec["impl_ok"] = False
+        out.append(rec)
+    return {"ok": True, "examples": out}
+
+
 def job_props(job: dict, harness: HarnessClient) -> dict:
     from hypothesis import strategies as st
 
@@ -562,6 +623,8 @@ def main(argv: list[str]) -> int:
             res = job_props(job, harness)
         elif kind == "probe":
             res = job_probe(job, harness)
+        elif kind == "examples":
+            res = job_examples(job, harness)
         else:
             res = {"ok": False, "error": f"unknown job kind {kind}"}
     except BaseException as e:  # noqa: BLE001

@@ -46,3 +46,14 @@ def run_mutants(ctx, spec: FormalSpec, mutants: list[Mutant]) -> dict:
     job.update(kind="mutants", max_examples=ctx.cfg.mutation_tests,
                mutants=[{"id": m.id, "source": m.module_source} for m in mutants])
     return ctx.runner.run_mutants(job, timeout_per_mutant=30.0)
+
+
+def run_examples(ctx, spec: FormalSpec, *, model_only: bool = False) -> list[dict]:
+    if not spec.examples:
+        return []
+    job = ctx.job_base(spec)
+    job.update(kind="examples", examples=spec.examples, model_only=model_only)
+    try:
+        return ctx.runner.run(job, timeout=300).get("examples", [])
+    except WorkerError:
+        return []

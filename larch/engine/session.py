@@ -24,7 +24,7 @@ from .context import RunContext
 from .findings import adjudicate, classify, count_kind, make_finding, propose_fix, repair_model
 from .formalize import FormalizeError, build_lean, formalize
 from .prove import finalize_proofs, prove_all
-from .testing import make_mutants, run_drt, run_mutants
+from .testing import make_mutants, run_drt, run_examples, run_mutants
 from .store import load_approved, save_approved
 
 
@@ -172,6 +172,13 @@ def _run(ctx: RunContext, report: Report, spec_override: FormalSpec | None) -> N
         cls = classify(drt)
         findings = [make_finding(r, "spec_violation" if r.get("impl_violates") else r["kind"], "confirmed",
                                  count=count_kind(drt, r)) for r in cls.confirmed]
+        for ex in run_examples(ctx, spec):
+            if ex.get("impl_ok") is False and ex.get("model_ok"):
+                findings.insert(0, make_finding(
+                    {"args_repr": ex["args_repr"], "impl": ex.get("impl", ""), "model": ex.get("model", "")},
+                    "doc_example", "confirmed",
+                    f"the documentation says {ctx.info.name.split('.')[-1]}({ex['args_repr']}) = {ex['expected']}",
+                ))
         model_issues: list[str] = []
         if cls.unexplained:
             with ui.step("Adjudicate disagreements") as st, ctx.timed("adjudicate"):

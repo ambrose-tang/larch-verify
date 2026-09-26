@@ -6,10 +6,10 @@ from dataclasses import dataclass, field
 
 from ..lean.lint import lint_lean
 from ..llm.base import UsageLimitError, LLMRequest
-from ..prompts import FORMALIZE_REPAIR, FORMALIZE_SCHEMA, FORMALIZE_SYSTEM, dump, formalize_user
-from ..spec import FormalSpec, Param, Postcondition, Property, edge_cases_from_json, harness_module, model_module
+from ..prompts import FORMALIZE_EXAMPLES_ADDENDUM, FORMALIZE_REPAIR, FORMALIZE_SYSTEM, dump, formalize_schema, formalize_user
+from ..spec import FormalSpec, Param, Postcondition, Property, edge_cases_from_json, examples_from_json, harness_module, model_module
 from .context import RunContext
-from .testing import run_drt, run_props
+from .testing import run_drt, run_examples, run_props
 
 
 class FormalizeError(RuntimeError):
@@ -73,6 +73,7 @@ def spec_from_data(data: dict, ctx: RunContext) -> tuple[FormalSpec | None, list
         strategy_code=_code_only(str(data.get("input_generator", data.get("strategy", "")))),
         edge_cases=edge_cases_from_json(str(data.get("edge_cases", ""))),
         notes=str(data.get("notes", "")),
+        examples=examples_from_json(str(data.get("documented_examples", ""))),
     )
     problems += spec.validate()
     return spec, problems
@@ -180,6 +181,12 @@ def sanity_check(ctx: RunContext, spec: FormalSpec) -> tuple[list[str], Sanity]:
             )
     if san.valid_inputs == 0 and not problems:
         problems.append("no generated input satisfies the precondition: it may be unsatisfiable")
+    for ex in run_examples(ctx, spec, model_only=True):
+        if ex.get("model_ok") is False:
+            problems.append(
+                f"The model contradicts the documented example {ctx.info.name}({ex['args_repr']}) = {ex['expected']}: "
+                f"the model returns {ex.get('model')}. The documented examples are ground truth."
+            )
     if spec.active_props():
         pres = run_props(ctx, spec, n=200)
         san.props = pres.get("props", {})
@@ -246,8 +253,9 @@ def formalize(ctx: RunContext, *, feedback: str | None = None, previous: FormalS
         if step:
             step.update("writing Lean model and specs" if attempt == 0 else f"repairing (round {attempt})")
         resp = ctx.ask(LLMRequest(
-            system=FORMALIZE_SYSTEM, prompt=prompt, model=cfg.model, stage="formalize",
-            effort=cfg.effort, json_schema=FORMALIZE_SCHEMA,
+            system=FORMALIZE_SYSTEM + (FORMALIZE_EXAMPLES_ADDENDUM if cfg.doc_examples else ""),
+            prompt=prompt, model=cfg.model, stage="formalize",
+            effort=cfg.effort, json_schema=formalize_schema(cfg.doc_examples),
         ))
         data = resp.data
         spec, problems = spec_from_data(data, ctx)

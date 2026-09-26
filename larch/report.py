@@ -73,6 +73,7 @@ class Finding:
             "crash": "Implementation raises an exception on a valid input",
             "timeout": "Implementation does not terminate on a valid input",
             "type": "Implementation returns a value of the wrong type",
+            "doc_example": "Implementation contradicts a documented example",
         }.get(self.kind, self.kind)
 
 

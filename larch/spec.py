@@ -83,6 +83,7 @@ class FormalSpec:
     strategy_code: str = ""
     edge_cases: list[list[Any]] = field(default_factory=list)
     notes: str = ""
+    examples: list[dict] = field(default_factory=list)  # documented {"args", "expected"}
 
     # -- derived ------------------------------------------------------------------------
     @property
@@ -404,3 +405,15 @@ def edge_cases_from_json(text: str) -> list[list[Any]]:
     if not isinstance(data, list):
         return []
     return [c for c in data if isinstance(c, list)]
+
+
+def examples_from_json(text: str) -> list[dict]:
+    try:
+        data = json.loads(text) if text and text.strip() else []
+    except json.JSONDecodeError:
+        return []
+    out = []
+    for e in data if isinstance(data, list) else []:
+        if isinstance(e, dict) and isinstance(e.get("args"), list) and "expected" in e:
+            out.append({"args": e["args"], "expected": e["expected"]})
+    return out

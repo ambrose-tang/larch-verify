@@ -245,3 +245,37 @@ def test_approved_spec_is_reused_without_llm(tmp_path: Path, monkeypatch):
     second = verify_function(f, "clamp", cfg, UI(), llm=llm)
     assert second.verdict == "passed", second.error
     assert sum(1 for r in llm.provider.requests if r.stage == "formalize") == n_formalize  # no new formalization
+
+
+# -- documented examples ------------------------------------------------------------------------------
+
+def test_documented_example_catches_copied_bug(tmp_path: Path):
+    """The model copies the bug (as hybrid formalization sometimes does) and the specs
+    are too weak to notice; the documented example still exposes it."""
+    from larch.engine.session import verify_function
+
+    weak = dict(FORMALIZATION)
+    weak["model"] = "def model (x lo hi : Int) : Int :=\n  if x < lo then lo else if x > hi then hi + 1 else x"
+    weak["postconditions"] = [{"name": "at_least_lo", "english": "result ≥ lo", "lean": "lo ≤ result"}]
+    weak["properties"] = []
+    weak["documented_examples"] = '[{"args": [7, 1, 3], "expected": 3}]'
+
+    def respond(req):
+        if req.stage == "formalize":
+            if "The model contradicts the documented example" in req.prompt:
+                return FORMALIZATION | {"documented_examples": weak["documented_examples"]}
+            return weak
+        if req.stage == "fix":
+            return {"explanation": "return hi", "fixed_function": CLAMP_OK}
+        return {"verdict": "implementation_bug", "explanation": "x"} if req.stage == "adjudicate" else "```lean\n```"
+
+    cfg = _cfg(tmp_path)
+    cfg.doc_examples = True
+    cfg.run_mutation = False
+    f = tmp_path / "clamp.py"
+    f.write_text(CLAMP_BUG)
+    llm = LLM(FakeProvider(respond), Ledger())
+    report = verify_function(f, "clamp", cfg, llm=llm)
+    assert report.verdict == "bug", (report.error, report.headline)
+    # the sanity check rejected the bug-copying model, forcing a repair round
+    assert sum(1 for r in llm.provider.requests if r.stage == "formalize") == 2

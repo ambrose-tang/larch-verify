@@ -166,6 +166,10 @@ class RichUI(UI):
         understanding = Text(spec.understanding.strip(), style="")
         pre = Text.assemble(("Assumes: ", "bold"), (spec.pre_english or "nothing (all inputs)", ""))
         parts = [understanding, Text(""), pre, Text(""), self._spec_table(spec, show_lean)]
+        if getattr(spec, "examples", None):
+            fn = spec.function.split(".")[-1]
+            shown = "; ".join(f"{fn}({', '.join(repr(a) for a in e['args'])}) = {e['expected']!r}" for e in spec.examples[:6])
+            parts += [Text(""), Text.assemble(("Documented examples checked: ", "bold"), (shown, ""))]
         if sanity and sanity.get("impl_violations"):
             parts += [Text(""), Text("Note: in quick testing the implementation already violates: " + ", ".join(sanity["impl_violations"]), style="yellow")]
         title = "[bold]Specification[/] (auto-approved: --yes)" if auto else "[bold]Proposed specification[/]: please review"
