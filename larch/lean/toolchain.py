@@ -16,6 +16,11 @@ from ..util import ProcResult, run_proc
 
 PINNED_TOOLCHAIN = "leanprover/lean4:v4.34.1"
 
+# Cap concurrent Lean elaborations process-wide: proof portfolios for several specs
+# (and several functions) otherwise start dozens of Lean processes, thrash, and turn
+# into spurious timeouts. Waiting for a slot does not count toward a check's timeout.
+_LEAN_SLOTS = threading.BoundedSemaphore(int(os.environ.get("LARCH_LEAN_JOBS", str(max(2, os.cpu_count() or 4)))))
+
 
 class ToolchainError(RuntimeError):
     pass
@@ -76,7 +81,8 @@ class LeanToolchain:
             olean.parent.mkdir(parents=True, exist_ok=True)
             cmd += ["-o", str(olean), "-i", str(olean.with_suffix(".ilean"))]
         cmd.append(str(file))
-        return run_proc(cmd, cwd=cwd, env=self.env(lean_path), timeout=timeout)
+        with _LEAN_SLOTS:
+            return run_proc(cmd, cwd=cwd, env=self.env(lean_path), timeout=timeout)
 
 
 _lock = threading.Lock()
