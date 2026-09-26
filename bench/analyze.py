@@ -23,17 +23,28 @@ def load(name: str) -> list[dict]:
     return [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
 
 
-def rarity() -> dict[tuple[str, str], float]:
+def _ground_truth() -> dict:
     gt = ROOT / "ground_truth.json"
-    if not gt.exists():
-        return {}
-    d = json.loads(gt.read_text())
+    return json.loads(gt.read_text()) if gt.exists() else {}
+
+
+def rarity() -> dict[tuple[str, str], float]:
     out = {}
-    for f, e in d.items():
+    for f, e in _ground_truth().items():
         if f.startswith("_"):
             continue
         for v, b in e["bugs"].items():
             out[(f, v)] = b["rate"]
+    return out
+
+
+def doc_visible() -> dict[tuple[str, str], bool]:
+    out = {}
+    for f, e in _ground_truth().items():
+        if f.startswith("_"):
+            continue
+        for v, b in e["bugs"].items():
+            out[(f, v)] = bool(b.get("visible_in_docstring"))
     return out
 
 
@@ -51,6 +62,9 @@ def summarize(name: str) -> dict:
     false_alarms = [r for r in oks if r["bug_reported"]]
     rare_bugs = [r for r in bugs if rare.get((r["function"], r["variant"]), 1.0) < 0.05]
     rare_caught = [r for r in rare_bugs if r["bug_reported"]]
+    vis = doc_visible()
+    hidden = [r for r in bugs if not vis.get((r["function"], r["variant"]), False)]
+    hidden_caught = [r for r in hidden if r["bug_reported"]]
     errors = [r for r in rs if r["verdict"] == "error"]
     proved = sum(r["proved"] for r in oks)
     total_specs = sum(r["total_specs"] for r in oks)
@@ -73,6 +87,7 @@ def summarize(name: str) -> dict:
         "caught": (len(caught), len(bugs)),
         "confirmed": (len(confirmed), len(bugs)),
         "rare": (len(rare_caught), len(rare_bugs)),
+        "hidden": (len(hidden_caught), len(hidden)),
         "false_alarms": (len(false_alarms), len(oks)),
         "possible": sum(1 for r in rs if r["possible_findings"]),
         "proved": (proved, total_specs),
@@ -91,14 +106,14 @@ def summarize(name: str) -> dict:
 
 
 def headline(names: list[str]) -> str:
-    rows = ["| experiment | bugs caught | rare bugs (<5% of inputs) | false alarms | errors | cost / fn | time / fn |",
-            "|---|---|---|---|---|---|---|"]
+    rows = ["| experiment | bugs caught | not visible in docstring | rare (<5% of inputs) | false alarms | errors | cost / fn | time / fn |",
+            "|---|---|---|---|---|---|---|---|"]
     for n in names:
         s = summarize(n)
         if not s["runs"]:
             continue
         rows.append(
-            f"| {n} | {pct(*s['caught'])} | {pct(*s['rare'])} | {pct(*s['false_alarms'])} | {s['errors']} | "
+            f"| {n} | {pct(*s['caught'])} | {pct(*s['hidden'])} | {pct(*s['rare'])} | {pct(*s['false_alarms'])} | {s['errors']} | "
             f"${s['cost_mean']:.3f} | {s['wall_mean']:.0f}s |"
         )
     return "\n".join(rows)

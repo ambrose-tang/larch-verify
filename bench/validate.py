@@ -90,10 +90,12 @@ def validate(samples: int, seed: int = 0) -> dict:
                 if o != r:
                     diffs.append((a, r, o))
             kat_caught = any(outcome(fn, a) != outcome(correct, a) for a, _ in dom["kat"])
+            doc_visible = any(outcome(fn, a) != outcome(correct, a) for a, _ in dom.get("doc", []))
             entry["bugs"][v] = {
                 "observable": bool(diffs),
                 "rate": len(diffs) / len(inputs),
-                "caught_by_docstring_examples": kat_caught,
+                "caught_by_known_answers": kat_caught,
+                "visible_in_docstring": doc_visible,
                 "example": repr(diffs[0]) if diffs else None,
             }
             if not diffs:
@@ -113,7 +115,7 @@ def main(argv=None) -> int:
         if func.startswith("_"):
             continue
         bugs = "  ".join(
-            f"{v}: {'OBSERVABLE' if b['observable'] else 'NOT OBSERVABLE'} ({b['rate']:.1%}{', KAT' if b['caught_by_docstring_examples'] else ''})"
+            f"{v}: {'OBSERVABLE' if b['observable'] else 'NOT OBSERVABLE'} ({b['rate']:.1%}{', doc' if b['visible_in_docstring'] else ''})"
             for v, b in e["bugs"].items()
         )
         flag = "" if not e["kat_failures"] and "correct_crashes" not in e else f"  !! {e['kat_failures'] or e.get('correct_crashes')}"
