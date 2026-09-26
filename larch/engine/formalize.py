@@ -177,7 +177,7 @@ def sanity_check(ctx: RunContext, spec: FormalSpec) -> tuple[list[str], Sanity]:
     san = Sanity()
     problems: list[str] = []
     gen_problems: list[str] = san.warnings
-    res = run_drt(ctx, spec, n=min(400, ctx.cfg.tests), model_only=True, shrink=True)
+    res = run_drt(ctx, spec, n=min(1000, ctx.cfg.tests), model_only=True, shrink=True)
     if not res.get("ok"):
         return [f"testing the model failed: {res.get('error')}"], san
     counts = res.get("counts", {})

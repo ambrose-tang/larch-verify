@@ -201,6 +201,14 @@ def decode(j, t: LType):
 # Type-directed generators (hypothesis) and output perturbation
 # ---------------------------------------------------------------------------
 
+# Classic overflow/boundary values: machine-word edges and their neighbours.
+_INT_BOUNDARIES = sorted({
+    s * v for s in (1, -1)
+    for b in (7, 8, 15, 16, 31, 32, 63, 64)
+    for v in (2**b - 1, 2**b, 2**b + 1)
+} | {0, 1, -1})
+
+
 def strategy_for(t: LType, *, max_len: int = 10):
     from hypothesis import strategies as st
 
@@ -210,9 +218,13 @@ def strategy_for(t: LType, *, max_len: int = 10):
             st.integers(-12, 12),
             st.integers(-1000, 1000),
             st.integers(-(2**64), 2**64),
+            st.sampled_from(_INT_BOUNDARIES),
         )
     if h == "Nat":
-        return st.one_of(st.integers(0, 12), st.integers(0, 1000), st.integers(0, 2**64))
+        return st.one_of(
+            st.integers(0, 12), st.integers(0, 1000), st.integers(0, 2**64),
+            st.sampled_from([b for b in _INT_BOUNDARIES if b >= 0]),
+        )
     if h == "Bool":
         return st.booleans()
     if h == "String":
