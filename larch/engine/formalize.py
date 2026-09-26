@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 
 from ..lean.lint import lint_lean
@@ -58,6 +59,7 @@ def spec_from_data(data: dict, ctx: RunContext) -> tuple[FormalSpec | None, list
             continue
         qps = [Param(name=str(x.get("name", "")), lean_type=str(x.get("lean_type", ""))) for x in q.get("params") or [] if isinstance(x, dict)]
         props.append(Property(name=str(q.get("name", "")).strip(), english=str(q.get("english", "")).strip(), params=qps, lean=str(q.get("lean", "")).strip()))
+    _normalize_names(posts, props)
     pre = data.get("precondition") or {}
     spec = FormalSpec(
         function=info.name,
@@ -77,6 +79,23 @@ def spec_from_data(data: dict, ctx: RunContext) -> tuple[FormalSpec | None, list
     )
     problems += spec.validate()
     return spec, problems
+
+
+def _normalize_names(posts: list, props: list) -> None:
+    """Spec names are internal Lean identifiers: make them valid, short and unique
+    here instead of spending a repair round on them."""
+    seen: set[str] = set()
+    for item in list(posts) + list(props):
+        base = re.sub(r"[^a-z0-9_]+", "_", item.name.lower()).strip("_")
+        if not base or not base[0].isalpha():
+            base = "spec_" + base if base else "spec"
+        base = base[:36].rstrip("_")
+        name, k = base, 2
+        while name in seen:
+            name = f"{base}_{k}"
+            k += 1
+        seen.add(name)
+        item.name = name
 
 
 def _code_only(text: str) -> str:

@@ -50,6 +50,23 @@ LLM responses are cached, and costs are *nominal*, meaning what the calls cost w
   variants.
 - *cost / time per function*: mean over variants.
 
+## What the pilot and the first runs taught us (before the comparisons)
+
+A 6-function pilot and the first benchmark attempts found problems that the
+comparisons depend on. All are fixed, and runs from before each fix were discarded.
+
+| finding | evidence | change |
+|---|---|---|
+| Proving at `high` effort is unaffordable | 15 proof calls for `run_length_encode` cost $2.41 (215k output tokens). Single `merge_intervals` calls cost up to **$1.31 and 18 minutes**. The same hard prompt cost $0.18 at `low` and $0.45 at `medium` | Prover effort is configurable per attempt (`--prover-efforts`). Per-spec budget (default $0.75). Effort compared in Experiment D |
+| The automation portfolio did not cover recursive models | 0/12 pilot specs about `rle`/`merge_intervals` were closed without an LLM | `fun_induction` scripts along each recursive helper (with `s.toList` generalization) now close 2/6 `rle` specs for free |
+| Specs over `Option`/`Except` results were often not decidable | `match result with …` inside a spec cannot be `decide`d, which cost a whole repair round | Exceptions are modelled as `Option` (`none` = raises). The prompt forbids `match` in specs. The repair hint names the fix |
+| The generator field was misread | Sonnet often returned an English *description* in `strategy`, which triggered full re-formalizations | Field renamed `input_generator` and described as code, plus a Lean-validated worked example. A broken generator now gets one cheap targeted repair instead of a re-formalization |
+| **Concurrent runs shared a workspace** | Variants of one function started in the same second wrote into the same run directory, and overwrote each other's Lean model and worker files | Unique run directories (regression test). All earlier results discarded |
+| Lean panics are slow | `xs[i]!` on a *wrong* output prints a symbolicated backtrace: 2000 evaluations took 25.9 s | `LEAN_BACKTRACE=0` for the harness: 0.4 s |
+| Harness stdout noise | `lean --run` prints linter warnings on stdout, which is the JSON channel | Linters off in the harness. The client skips non-JSON lines |
+| Slow models crashed formalization | A `gcd` model that recursed on integer magnitude blew the job deadline | 3 s per-evaluation deadline, early stop, and a repair hint naming the slow inputs |
+| Account usage limits | The benchmark exhausted a Claude subscription session window mid-run, and 58 variants were recorded as failures | `UsageLimitError` is never retried. The runner pauses until the reset time and resumes |
+
 ## Results
 
 (filled in as experiments complete)

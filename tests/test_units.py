@@ -303,3 +303,15 @@ def test_run_dirs_are_unique_for_concurrent_runs(tmp_path: Path):
     with ThreadPoolExecutor(4) as ex:
         reports = list(ex.map(lambda _: verify_function(f, "g", cfg, UI()), range(4)))
     assert len({r.artifacts_dir for r in reports}) == 4
+
+
+def test_spec_names_are_normalized():
+    from larch.engine.formalize import _normalize_names
+    from larch.spec import Postcondition
+
+    posts = [Postcondition("Adding-a-timestamp never increases the allowance of any window", "", "True"),
+             Postcondition("ok", "", "True"), Postcondition("ok", "", "True"), Postcondition("9lives", "", "True")]
+    _normalize_names(posts, [])
+    names = [p.name for p in posts]
+    assert len(set(names)) == 4
+    assert all(n[0].isalpha() and len(n) <= 40 and n.replace("_", "").isalnum() for n in names), names
