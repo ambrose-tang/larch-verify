@@ -221,9 +221,7 @@ Return the JSON object described by the schema. Spec names are snake_case identi
 
 FORMALIZE_REPAIR = """\
 ## Your previous formalization had problems
-```json
 {previous}
-```
 
 ## Problems found by Larch
 {problems}
@@ -517,3 +515,25 @@ def formalize_schema(with_examples: bool) -> dict:
     }
     sch["required"] = sch["required"] + ["documented_examples"]
     return sch
+
+
+def render_previous(data: dict) -> str:
+    """Show a previous formalization readably (real newlines in code), so repairs do not
+    copy JSON escaping into Lean code."""
+    if not isinstance(data, dict):
+        return "```json\n" + dump(data) + "\n```"
+    parts = ["Model:", "```lean", str(data.get("model", "")), "```"]
+    pre = data.get("precondition") or {}
+    parts += [f"Precondition: `{pre.get('lean', '')}`  ({pre.get('english', '')})", "Postconditions:"]
+    for p in data.get("postconditions") or []:
+        if isinstance(p, dict):
+            parts.append(f"- {p.get('name')}: `{p.get('lean')}`  ({p.get('english')})")
+    for q in data.get("properties") or []:
+        if isinstance(q, dict):
+            ps = ", ".join(f"{x.get('name')} : {x.get('lean_type')}" for x in q.get("params") or [] if isinstance(x, dict))
+            parts.append(f"- property {q.get('name')} ({ps}): `{q.get('lean')}`  ({q.get('english')})")
+    gen = data.get("input_generator", data.get("strategy", ""))
+    parts += ["Input generator:", "```python", str(gen), "```"]
+    rest = {k: v for k, v in data.items() if k not in ("model", "precondition", "postconditions", "properties", "input_generator", "strategy")}
+    parts += ["Other fields:", "```json", dump(rest), "```"]
+    return "\n".join(parts)

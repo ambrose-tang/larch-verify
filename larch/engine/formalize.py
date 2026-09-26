@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from ..lean.lint import lint_lean
 from ..llm.base import UsageLimitError, LLMRequest
-from ..prompts import FORMALIZE_EXAMPLES_ADDENDUM, FORMALIZE_REPAIR, FORMALIZE_SYSTEM, dump, formalize_schema, formalize_user
+from ..prompts import FORMALIZE_EXAMPLES_ADDENDUM, FORMALIZE_REPAIR, FORMALIZE_SYSTEM, dump, formalize_schema, formalize_user, render_previous
 from ..spec import FormalSpec, Param, Postcondition, Property, edge_cases_from_json, examples_from_json, harness_module, model_module
 from .context import RunContext
 from .testing import run_drt, run_examples, run_props
@@ -49,7 +49,7 @@ def spec_from_data(data: dict, ctx: RunContext) -> tuple[FormalSpec | None, list
         for p, rp in zip(info.params, raw_params)
     ]
     posts = [
-        Postcondition(name=str(p.get("name", "")).strip(), english=str(p.get("english", "")).strip(), lean=str(p.get("lean", "")).strip())
+        Postcondition(name=str(p.get("name", "")).strip(), english=str(p.get("english", "")).strip(), lean=_unescape(str(p.get("lean", ""))).strip())
         for p in data.get("postconditions") or []
         if isinstance(p, dict)
     ]
@@ -67,18 +67,30 @@ def spec_from_data(data: dict, ctx: RunContext) -> tuple[FormalSpec | None, list
         params=params,
         return_type=str(data.get("return_type", "")).strip(),
         exceptions=bool(data.get("exceptions", False)),
-        model_code=_strip_namespace(str(data.get("model", ""))),
+        model_code=_strip_namespace(_unescape(str(data.get("model", "")))),
         pre_english=str(pre.get("english", "")).strip(),
-        pre_lean=str(pre.get("lean", "True")).strip() or "True",
+        pre_lean=_unescape(str(pre.get("lean", "True"))).strip() or "True",
         postconditions=posts,
         properties=props,
-        strategy_code=_code_only(str(data.get("input_generator", data.get("strategy", "")))),
+        strategy_code=_unescape(_code_only(str(data.get("input_generator", data.get("strategy", ""))))),
         edge_cases=edge_cases_from_json(str(data.get("edge_cases", ""))),
         notes=str(data.get("notes", "")),
         examples=examples_from_json(str(data.get("documented_examples", ""))),
     )
     problems += spec.validate()
     return spec, problems
+
+
+_ESCAPED_NL = re.compile(r"\\n(?=[ \t|]|$|def |theorem |abbrev |--|where\b)")
+
+
+def _unescape(code: str) -> str:
+    """Repair prompts show earlier answers as JSON, and models sometimes copy the
+    escaping back: a literal backslash-n where a newline was meant. Undo that, without
+    touching `\\n` inside Lean string literals (those are followed by a quote)."""
+    if "\\n" not in code:
+        return code
+    return _ESCAPED_NL.sub("\n", code).replace("\\t", "  ")
 
 
 def _normalize_names(posts: list, props: list) -> None:
@@ -181,9 +193,11 @@ def sanity_check(ctx: RunContext, spec: FormalSpec) -> tuple[list[str], Sanity]:
     if res.get("slow_model_inputs") or counts.get("model_timeout", 0) > total * 0.05:
         ex = "; ".join(f"({a})" for a in res.get("slow_model_inputs", [])) or "several inputs"
         problems.append(
-            f"the Lean model takes more than 3 seconds on {ex}. Make it efficient: no recursion or "
-            "iteration proportional to an integer's magnitude (use Nat.gcd, Nat.sqrt, closed forms, or "
-            "recursion on list structure), or restrict the input domain in the precondition"
+            f"evaluating the model and its specs takes more than 3 seconds on {ex}. Everything must be "
+            "cheap to evaluate on inputs up to ~2^64: no recursion or iteration proportional to an "
+            "integer's magnitude in the model (use Nat.gcd, Nat.sqrt, closed forms, list recursion), and no "
+            "spec quantifier ranging over values up to an input's magnitude (e.g. 'every d ≤ |a|'); "
+            "state such properties differently or bound the inputs in the precondition"
         )
     mv = res.get("minimal_model_violation") or (res.get("model_violations") or [None])[0]
     if mv:
@@ -297,7 +311,7 @@ def formalize(ctx: RunContext, *, feedback: str | None = None, previous: FormalS
             return spec, san, rounds
         last_problems = problems
         prompt = base_prompt + "\n" + FORMALIZE_REPAIR.format(
-            previous=dump(data), problems="\n".join(f"- {p}" for p in problems)
+            previous=render_previous(data), problems="\n".join(f"- {p}" for p in problems)
         )
     raise FormalizeError("could not produce a consistent Lean model and specs", last_problems)
 
