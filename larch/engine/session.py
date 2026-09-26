@@ -172,6 +172,11 @@ def _run(ctx: RunContext, report: Report, spec_override: FormalSpec | None) -> N
         cls = classify(drt)
         findings = [make_finding(r, "spec_violation" if r.get("impl_violates") else r["kind"], "confirmed",
                                  count=count_kind(drt, r)) for r in cls.confirmed]
+        for r in cls.spec_problems[:3]:
+            msg = (f"spec {', '.join(r['model_violates'])} is false on input ({r.get('args_repr')}): the verified model "
+                   f"returns {r.get('model')} and violates it too, so the spec (not the code) is wrong")
+            if msg not in report.warnings:
+                report.warnings.append(msg)
         for ex in run_examples(ctx, spec):
             if ex.get("impl_ok") is False and ex.get("model_ok"):
                 findings.insert(0, make_finding(

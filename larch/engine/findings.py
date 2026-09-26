@@ -21,8 +21,9 @@ DIVERGENT = ("value", "crash", "timeout", "type")
 
 @dataclass
 class Classified:
-    confirmed: list[dict]  # impl violates an approved spec, or hangs
+    confirmed: list[dict]  # impl violates an approved spec (that the model satisfies), or hangs
     unexplained: list[dict]  # differs from model, no spec violated -> adjudicate
+    spec_problems: list[dict]  # the model violates a spec too: the spec (or model) is wrong
 
 
 def representative_failures(drt: dict) -> list[dict]:
@@ -43,13 +44,27 @@ def representative_failures(drt: dict) -> list[dict]:
 
 
 def classify(drt: dict) -> Classified:
-    confirmed, unexplained = [], []
-    for r in representative_failures(drt):
-        if r.get("impl_violates") or r.get("kind") == "timeout":
-            confirmed.append(r)
+    """A spec violation only incriminates the implementation if the model satisfies
+    that spec on the same input. If the model violates it too, the spec is wrong (for
+    example an over-tight bound introduced to keep it decidable)."""
+    confirmed, unexplained, spec_problems = [], [], []
+    for r in representative_failures(drt) + list(drt.get("model_violations", [])):
+        model_bad = set(r.get("model_violates", []))
+        impl_only = [p for p in r.get("impl_violates", []) if p not in model_bad]
+        if model_bad:
+            spec_problems.append(r)
+        if impl_only or r.get("kind") == "timeout":
+            confirmed.append(dict(r, impl_violates=impl_only))
         elif r.get("kind") in DIVERGENT:
-            unexplained.append(r)
-    return Classified(confirmed, unexplained)
+            unexplained.append(dict(r, impl_violates=[]))
+    seen: set = set()
+    dedup = []
+    for r in confirmed:
+        key = (r.get("kind"), tuple(sorted(r.get("impl_violates", []))))
+        if key not in seen:
+            seen.add(key)
+            dedup.append(r)
+    return Classified(dedup, unexplained, spec_problems)
 
 
 def count_kind(drt: dict, rec: dict) -> int:

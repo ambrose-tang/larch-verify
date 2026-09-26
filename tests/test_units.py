@@ -315,3 +315,13 @@ def test_spec_names_are_normalized():
     names = [p.name for p in posts]
     assert len(set(names)) == 4
     assert all(n[0].isalpha() and len(n) <= 40 and n.replace("_", "").isalnum() for n in names), names
+
+
+def test_spec_violated_by_model_too_is_not_an_implementation_bug():
+    from larch.engine.findings import classify
+
+    both = {"kind": "agree", "args_repr": "2**64", "impl_violates": ["pow"], "model_violates": ["pow"]}
+    impl_only = {"kind": "value", "args_repr": "0", "impl_violates": ["rng"], "model_violates": []}
+    c = classify({"failures": [both, impl_only]})
+    assert [r["args_repr"] for r in c.confirmed] == ["0"]
+    assert [r["args_repr"] for r in c.spec_problems] == ["2**64"]
