@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass, field
 
 from ..lean.lint import lint_lean
+from ..util import unescape_code
 from ..llm.base import UsageLimitError, LLMRequest
 from ..prompts import FORMALIZE_EXAMPLES_ADDENDUM, FORMALIZE_REPAIR, FORMALIZE_SYSTEM, dump, formalize_schema, formalize_user, render_previous
 from ..spec import FormalSpec, Param, Postcondition, Property, edge_cases_from_json, examples_from_json, harness_module, model_module
@@ -49,7 +50,7 @@ def spec_from_data(data: dict, ctx: RunContext) -> tuple[FormalSpec | None, list
         for p, rp in zip(info.params, raw_params)
     ]
     posts = [
-        Postcondition(name=str(p.get("name", "")).strip(), english=str(p.get("english", "")).strip(), lean=_unescape(str(p.get("lean", ""))).strip())
+        Postcondition(name=str(p.get("name", "")).strip(), english=str(p.get("english", "")).strip(), lean=unescape_code(str(p.get("lean", ""))).strip())
         for p in data.get("postconditions") or []
         if isinstance(p, dict)
     ]
@@ -67,30 +68,18 @@ def spec_from_data(data: dict, ctx: RunContext) -> tuple[FormalSpec | None, list
         params=params,
         return_type=str(data.get("return_type", "")).strip(),
         exceptions=bool(data.get("exceptions", False)),
-        model_code=_strip_namespace(_unescape(str(data.get("model", "")))),
+        model_code=_strip_namespace(unescape_code(str(data.get("model", "")))),
         pre_english=str(pre.get("english", "")).strip(),
-        pre_lean=_unescape(str(pre.get("lean", "True"))).strip() or "True",
+        pre_lean=unescape_code(str(pre.get("lean", "True"))).strip() or "True",
         postconditions=posts,
         properties=props,
-        strategy_code=_unescape(_code_only(str(data.get("input_generator", data.get("strategy", ""))))),
+        strategy_code=unescape_code(_code_only(str(data.get("input_generator", data.get("strategy", ""))))),
         edge_cases=edge_cases_from_json(str(data.get("edge_cases", ""))),
         notes=str(data.get("notes", "")),
         examples=examples_from_json(str(data.get("documented_examples", ""))),
     )
     problems += spec.validate()
     return spec, problems
-
-
-_ESCAPED_NL = re.compile(r"\\n(?=[ \t|]|$|def |theorem |abbrev |--|where\b)")
-
-
-def _unescape(code: str) -> str:
-    """Repair prompts show earlier answers as JSON, and models sometimes copy the
-    escaping back: a literal backslash-n where a newline was meant. Undo that, without
-    touching `\\n` inside Lean string literals (those are followed by a quote)."""
-    if "\\n" not in code:
-        return code
-    return _ESCAPED_NL.sub("\n", code).replace("\\t", "  ")
 
 
 def _normalize_names(posts: list, props: list) -> None:

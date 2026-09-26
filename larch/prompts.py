@@ -522,7 +522,9 @@ def render_previous(data: dict) -> str:
     copy JSON escaping into Lean code."""
     if not isinstance(data, dict):
         return "```json\n" + dump(data) + "\n```"
-    parts = ["Model:", "```lean", str(data.get("model", "")), "```"]
+    from .util import unescape_code
+
+    parts = ["Model:", "```lean", unescape_code(str(data.get("model", ""))), "```"]
     pre = data.get("precondition") or {}
     parts += [f"Precondition: `{pre.get('lean', '')}`  ({pre.get('english', '')})", "Postconditions:"]
     for p in data.get("postconditions") or []:
@@ -533,7 +535,7 @@ def render_previous(data: dict) -> str:
             ps = ", ".join(f"{x.get('name')} : {x.get('lean_type')}" for x in q.get("params") or [] if isinstance(x, dict))
             parts.append(f"- property {q.get('name')} ({ps}): `{q.get('lean')}`  ({q.get('english')})")
     gen = data.get("input_generator", data.get("strategy", ""))
-    parts += ["Input generator:", "```python", str(gen), "```"]
+    parts += ["Input generator:", "```python", unescape_code(str(gen)), "```"]
     rest = {k: v for k, v in data.items() if k not in ("model", "precondition", "postconditions", "properties", "input_generator", "strategy")}
     parts += ["Other fields:", "```json", dump(rest), "```"]
     return "\n".join(parts)

@@ -100,3 +100,44 @@ def truncate(text: str, limit: int) -> str:
     head = text[: limit * 2 // 3]
     tail = text[-limit // 3 :]
     return f"{head}\n… [{len(text) - limit} characters truncated] …\n{tail}"
+
+
+def _double_escaped(code: str) -> bool:
+    """True if `code` contains a backslash outside any Lean string or char literal.
+    Valid Lean never does, so this means JSON escaping was copied into the code."""
+    in_str = False
+    i, n = 0, len(code)
+    while i < n:
+        c = code[i]
+        if in_str:
+            if c == "\\":
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+        elif c == "'" and i + 2 < n and code[i + 1] == "\\":  # char literal like '\n'
+            end = code.find("'", i + 2)
+            i = end + 1 if end != -1 else n
+            continue
+        elif c == "\\":
+            return True
+        i += 1
+    return False
+
+
+def unescape_code(code: str) -> str:
+    """Undo one level of JSON escaping when a model copied it into Lean code
+    (e.g. `splitOn \\".\\"` or a literal `\\n` for a newline). Legitimate Lean escapes
+    inside string/char literals are left alone."""
+    if "\\" not in code or not _double_escaped(code):
+        return code
+    placeholder = "\x00"
+    return (
+        code.replace("\\\\", placeholder)
+        .replace('\\"', '"')
+        .replace("\\n", "\n")
+        .replace("\\t", "  ")
+        .replace(placeholder, "\\")
+    )

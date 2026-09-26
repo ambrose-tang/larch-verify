@@ -325,3 +325,15 @@ def test_spec_violated_by_model_too_is_not_an_implementation_bug():
     c = classify({"failures": [both, impl_only]})
     assert [r["args_repr"] for r in c.confirmed] == ["0"]
     assert [r["args_repr"] for r in c.spec_problems] == ["2**64"]
+
+
+@pytest.mark.parametrize("src,want", [
+    ('(s.splitOn \\".\\").map f\\n', '(s.splitOn ".").map f\n'),
+    ('def f : String := "a\\nb"', 'def f : String := "a\\nb"'),
+    ("def g (c : Char) : Bool := c = '\\n'", "def g (c : Char) : Bool := c = '\\n'"),
+    ('def h : String := \\"a\\\\nb\\"', 'def h : String := "a\\nb"'),
+])
+def test_unescape_copied_json_escaping(src, want):
+    from larch.util import unescape_code
+
+    assert unescape_code(src) == want
