@@ -67,6 +67,22 @@ def wait_for_quota() -> None:
         time.sleep(min(remaining, 60))
 
 
+def strip_docstrings(src: str) -> str:
+    import ast
+
+    tree = ast.parse(src)
+    lines = src.splitlines(keepends=True)
+    cut: list[tuple[int, int]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(getattr(first, "value", None), ast.Constant) and isinstance(first.value.value, str):
+                cut.append((first.lineno, first.end_lineno))
+    for start, end in sorted(cut, reverse=True):
+        del lines[start - 1:end]
+    return "".join(lines)
+
+
 def record_from(report, func: str, variant: str, wall: float) -> dict:
     top = next((f for f in report.findings if f.confidence in ("confirmed", "likely")), None)
     return {
@@ -122,6 +138,7 @@ def main(argv=None) -> int:
     ap.add_argument("--proof-budget", type=float, default=0.30, help="max LLM spend per spec (USD)")
     ap.add_argument("--test-strategy", default="mixed")
     ap.add_argument("--doc-examples", action="store_true", help="extract and check documented examples")
+    ap.add_argument("--strip-docstrings", action="store_true", help="remove docstrings (undocumented-code robustness)")
     ap.add_argument("--tests", type=int, default=2000)
     ap.add_argument("--mutants", type=int, default=40)
     ap.add_argument("--no-proofs", action="store_true")
@@ -167,7 +184,8 @@ def main(argv=None) -> int:
             shutil.rmtree(work)
         work.mkdir(parents=True)
         target = work / f"{func}.py"
-        shutil.copy(FUNCS / func / f"{variant}.py", target)
+        src = (FUNCS / func / f"{variant}.py").read_text()
+        target.write_text(strip_docstrings(src) if args.strip_docstrings else src)
         cfg = Config(
             provider=args.provider, model=args.model, prover_model=args.prover_model, effort=args.effort,
             formalize_mode=args.formalize_mode, proof_strategy=args.proof_strategy, proof_attempts=args.proof_attempts,

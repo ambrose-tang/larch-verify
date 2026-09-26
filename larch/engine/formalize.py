@@ -313,9 +313,20 @@ def _repair_generator(ctx: RunContext, spec: FormalSpec, san: Sanity) -> tuple[F
     return spec, san
 
 
+def effective_mode(ctx: RunContext) -> str:
+    """`auto`: write the model from the documentation alone when there is real
+    documentation (so bugs in the code cannot leak into the model), otherwise from
+    the documentation and the code."""
+    mode = ctx.cfg.formalize_mode
+    if mode != "auto":
+        return mode
+    doc = ctx.info.docstring or ""
+    return "intent" if len(doc.split()) >= 8 else "hybrid"
+
+
 def formalize(ctx: RunContext, *, feedback: str | None = None, previous: FormalSpec | None = None, step=None) -> tuple[FormalSpec, Sanity, int]:
     cfg = ctx.cfg
-    base_prompt = formalize_user(ctx.info, cfg.formalize_mode)
+    base_prompt = formalize_user(ctx.info, effective_mode(ctx))
     prompt = base_prompt
     if feedback and previous is not None:
         prompt += (

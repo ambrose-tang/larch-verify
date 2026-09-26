@@ -231,7 +231,7 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--budget", type=float, help="max LLM spend in USD per function (default 5)")
     v.add_argument("--python", help="interpreter used to run your code (default: project .venv or current)")
     v.add_argument("--artifacts", help="directory for run artifacts (default ~/.cache/larch/runs)")
-    v.add_argument("--formalize-mode", choices=["hybrid", "intent", "transliterate"])
+    v.add_argument("--formalize-mode", choices=["auto", "hybrid", "intent", "transliterate"])
     v.add_argument("--proof-strategy", choices=["portfolio", "llm", "portfolio+llm", "portfolio+sketch"])
     v.add_argument("--test-strategy", choices=["typed", "llm", "mixed"])
     v.add_argument("--doc-examples", action=argparse.BooleanOptionalAction, default=None,
