@@ -238,7 +238,7 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--proof-strategy", choices=["portfolio", "llm", "portfolio+llm", "portfolio+sketch"])
     v.add_argument("--test-strategy", choices=["typed", "llm", "mixed"])
     v.add_argument("--doc-examples", action=argparse.BooleanOptionalAction, default=None,
-                   help="check examples written in the docstring against the model and the code")
+                   help="check examples written in the docstring against the model and the code (default on)")
     v.add_argument("--proof-attempts", type=int)
     v.add_argument("--prover-efforts", help='per-attempt reasoning effort, e.g. "medium,medium,high,high"')
     v.add_argument("--seed", type=int)

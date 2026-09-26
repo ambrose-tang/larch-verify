@@ -158,3 +158,39 @@ integer literals. Random strings almost never satisfy those preconditions. LLM-w
 generators build them directly. **Decision:** keep `mixed`. It ties the LLM-only
 generator here, and its type-directed third still covers what the LLM does not think
 of, like the `2^64` boundary that exposed a wrong spec during development.
+
+### X. Documented examples as checks
+
+Added after Experiment A showed hybrid copying a bug that the docstring's own example
+(`4 -> "IV"`) contradicted. The formalizer lists every concrete example written in the
+docstring. The model must agree with each one (checked during sanity testing), and an
+implementation that contradicts one is a confirmed finding.
+
+| configuration | bugs caught | false alarms | cost / fn |
+|---|---|---|---|
+| auto (intent) | 48/48 | 0/24 | $0.081 |
+| auto (intent) + documented examples | 48/48 | 0/24 | **$0.064** |
+
+It adds no detection on top of intent, which was already at 48/48. It did make runs
+cheaper: models that disagreed with an example were rejected in the cheap sanity pass,
+instead of after a repair round. It also changed how 19 of the 48 bugs are reported,
+as "implementation contradicts the documented example `int_to_roman(4) = 'IV'`": the
+most convincing evidence a reviewer can get. **Decision:** on by default
+(`--no-doc-examples` turns it off).
+
+### N. Undocumented code
+
+The 24 correct variants were run with their docstrings stripped. `auto` then falls back
+to hybrid, because there is no intent to model from.
+
+| configuration | false alarms | cost / fn |
+|---|---|---|
+| auto, documented (A) | 0/24 | $0.081 |
+| auto, docstrings stripped | 1/24 (4%) | $0.074 |
+
+The one false alarm: with no documentation, the formalizer decided version parts must
+be ASCII digits and flagged that `compare_versions("+0.0", "+0.0")` returns 0 instead of
+raising. Python's `int()` quietly accepts a sign. This is a real behavioural quirk, but
+not a bug by the benchmark's ground truth, so it is counted against Larch. In real use it
+surfaces during spec review, where the user sees "each part is a string of ASCII digits"
+and can reject that spec.

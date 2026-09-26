@@ -19,7 +19,7 @@ class Config:
 
     # Approaches (see EVALS.md for the comparison that picked these)
     formalize_mode: str = "auto"  # auto (intent if documented, else hybrid) | hybrid | intent | transliterate
-    doc_examples: bool = False  # extract documented examples and check model + implementation against them
+    doc_examples: bool = True  # extract documented examples and check model + implementation against them
     proof_strategy: str = "portfolio+llm"  # llm | portfolio+llm | portfolio+sketch
     test_strategy: str = "mixed"  # typed | llm | mixed
 
