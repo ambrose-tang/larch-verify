@@ -22,6 +22,11 @@ dependencies = [
   "anthropic>=0.40",
   "rich>=13.7",
   "hypothesis>=6.100",
+  # hypothesis needs this backport only on Python <3.11, but Larch's own
+  # environment may run a newer Python than the target project it verifies.
+  # The sandboxed worker's PYTHONPATH is a symlink farm built from packages
+  # installed *here*, so it must be present regardless of Larch's own version.
+  "exceptiongroup>=1.2",
 ]
 
 [project.optional-dependencies]
