@@ -271,5 +271,5 @@ python -m bench.validate                       # ground truth
 python -m bench.analyze A2-intent A2-hybrid A2-translit --detail
 python -m bench.analyze D2-portfolio D2-port+llm-low D2-port+sketch-low --proofs
 ```
-Results live in `bench/runs/<experiment>/results.jsonl`. The LLM response cache makes
+Per-variant results are committed in `bench/results/<experiment>.jsonl` (summary: `bench/results_summary.json`); live runs write to `bench/runs/`. The LLM response cache makes
 re-analysis free.
