@@ -1,0 +1,782 @@
+{
+  "A2-intent": {
+    "name": "A2-intent",
+    "runs": 72,
+    "errors": 0,
+    "caught": [
+      48,
+      48
+    ],
+    "confirmed": [
+      40,
+      48
+    ],
+    "rare": [
+      9,
+      9
+    ],
+    "hidden": [
+      28,
+      28
+    ],
+    "false_alarms": [
+      0,
+      24
+    ],
+    "possible": 0,
+    "proved": [
+      0,
+      122
+    ],
+    "fully": [
+      0,
+      24
+    ],
+    "attempted": 0,
+    "cost_mean": 0.08076954444444444,
+    "cost_total": 5.8154072,
+    "wall_mean": 27.229761850680763,
+    "wall_median": 15.167184021001958,
+    "fixes": [
+      0,
+      48,
+      0
+    ],
+    "mutation": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "prove_cost_mean": 0,
+    "prove_secs_mean": 0
+  },
+  "A2-hybrid": {
+    "name": "A2-hybrid",
+    "runs": 72,
+    "errors": 0,
+    "caught": [
+      46,
+      48
+    ],
+    "confirmed": [
+      39,
+      48
+    ],
+    "rare": [
+      9,
+      9
+    ],
+    "hidden": [
+      28,
+      28
+    ],
+    "false_alarms": [
+      0,
+      24
+    ],
+    "possible": 0,
+    "proved": [
+      0,
+      109
+    ],
+    "fully": [
+      0,
+      24
+    ],
+    "attempted": 0,
+    "cost_mean": 0.08248311666666666,
+    "cost_total": 5.9387844,
+    "wall_mean": 28.37900207297212,
+    "wall_median": 13.920816563000699,
+    "fixes": [
+      0,
+      46,
+      0
+    ],
+    "mutation": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "prove_cost_mean": 0,
+    "prove_secs_mean": 0
+  },
+  "A2-translit": {
+    "name": "A2-translit",
+    "runs": 72,
+    "errors": 0,
+    "caught": [
+      6,
+      48
+    ],
+    "confirmed": [
+      6,
+      48
+    ],
+    "rare": [
+      1,
+      9
+    ],
+    "hidden": [
+      2,
+      28
+    ],
+    "false_alarms": [
+      0,
+      24
+    ],
+    "possible": 0,
+    "proved": [
+      0,
+      116
+    ],
+    "fully": [
+      0,
+      24
+    ],
+    "attempted": 0,
+    "cost_mean": 0.10862606666666667,
+    "cost_total": 7.8210768,
+    "wall_mean": 83.7343610491388,
+    "wall_median": 70.66123183349919,
+    "fixes": [
+      0,
+      6,
+      0
+    ],
+    "mutation": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "prove_cost_mean": 0,
+    "prove_secs_mean": 0
+  },
+  "D2-portfolio": {
+    "name": "D2-portfolio",
+    "runs": 24,
+    "errors": 0,
+    "caught": [
+      0,
+      0
+    ],
+    "confirmed": [
+      0,
+      0
+    ],
+    "rare": [
+      0,
+      0
+    ],
+    "hidden": [
+      0,
+      0
+    ],
+    "false_alarms": [
+      0,
+      24
+    ],
+    "possible": 0,
+    "proved": [
+      61,
+      122
+    ],
+    "fully": [
+      5,
+      24
+    ],
+    "attempted": 24,
+    "cost_mean": 0.07869351666666667,
+    "cost_total": 1.8886444,
+    "wall_mean": 56.404724810750395,
+    "wall_median": 43.85724481250145,
+    "fixes": [
+      0,
+      0,
+      0
+    ],
+    "mutation": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "prove_cost_mean": 0,
+    "prove_secs_mean": 30.110833333333332
+  },
+  "D2-port+llm-low": {
+    "name": "D2-port+llm-low",
+    "runs": 24,
+    "errors": 0,
+    "caught": [
+      0,
+      0
+    ],
+    "confirmed": [
+      0,
+      0
+    ],
+    "rare": [
+      0,
+      0
+    ],
+    "hidden": [
+      0,
+      0
+    ],
+    "false_alarms": [
+      0,
+      24
+    ],
+    "possible": 0,
+    "proved": [
+      82,
+      122
+    ],
+    "fully": [
+      9,
+      24
+    ],
+    "attempted": 24,
+    "cost_mean": 0.5517033666666666,
+    "cost_total": 13.240880800000001,
+    "wall_mean": 312.1263882968333,
+    "wall_median": 258.9566702919983,
+    "fixes": [
+      0,
+      0,
+      0
+    ],
+    "mutation": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "prove_cost_mean": 0.47300985,
+    "prove_secs_mean": 295.62916666666666
+  },
+  "D2-port+sketch-low": {
+    "name": "D2-port+sketch-low",
+    "runs": 24,
+    "errors": 0,
+    "caught": [
+      0,
+      0
+    ],
+    "confirmed": [
+      0,
+      0
+    ],
+    "rare": [
+      0,
+      0
+    ],
+    "hidden": [
+      0,
+      0
+    ],
+    "false_alarms": [
+      0,
+      24
+    ],
+    "possible": 0,
+    "proved": [
+      74,
+      122
+    ],
+    "fully": [
+      6,
+      24
+    ],
+    "attempted": 24,
+    "cost_mean": 0.5411023333333334,
+    "cost_total": 12.986456,
+    "wall_mean": 320.9421362533749,
+    "wall_median": 182.84886806250142,
+    "fixes": [
+      0,
+      0,
+      0
+    ],
+    "mutation": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "prove_cost_mean": 0.46240881666666667,
+    "prove_secs_mean": 296.79625
+  },
+  "D2-port+llm-haiku": {
+    "name": "D2-port+llm-haiku",
+    "runs": 24,
+    "errors": 0,
+    "caught": [
+      0,
+      0
+    ],
+    "confirmed": [
+      0,
+      0
+    ],
+    "rare": [
+      0,
+      0
+    ],
+    "hidden": [
+      0,
+      0
+    ],
+    "false_alarms": [
+      0,
+      24
+    ],
+    "possible": 0,
+    "proved": [
+      63,
+      122
+    ],
+    "fully": [
+      5,
+      24
+    ],
+    "attempted": 24,
+    "cost_mean": 0.702173225,
+    "cost_total": 16.8521574,
+    "wall_mean": 718.7461016562489,
+    "wall_median": 864.6504406870008,
+    "fixes": [
+      0,
+      0,
+      0
+    ],
+    "mutation": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "prove_cost_mean": 0.6234797083333333,
+    "prove_secs_mean": 703.9616666666667
+  },
+  "E-typed": {
+    "name": "E-typed",
+    "runs": 72,
+    "errors": 0,
+    "caught": [
+      39,
+      48
+    ],
+    "confirmed": [
+      33,
+      48
+    ],
+    "rare": [
+      6,
+      9
+    ],
+    "hidden": [
+      23,
+      28
+    ],
+    "false_alarms": [
+      0,
+      24
+    ],
+    "possible": 0,
+    "proved": [
+      0,
+      122
+    ],
+    "fully": [
+      0,
+      24
+    ],
+    "attempted": 0,
+    "cost_mean": 0.08153929444444444,
+    "cost_total": 5.8708292,
+    "wall_mean": 21.363158911514095,
+    "wall_median": 14.020697290998214,
+    "fixes": [
+      0,
+      39,
+      0
+    ],
+    "mutation": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "prove_cost_mean": 0,
+    "prove_secs_mean": 0
+  },
+  "E-llm": {
+    "name": "E-llm",
+    "runs": 72,
+    "errors": 0,
+    "caught": [
+      48,
+      48
+    ],
+    "confirmed": [
+      41,
+      48
+    ],
+    "rare": [
+      9,
+      9
+    ],
+    "hidden": [
+      28,
+      28
+    ],
+    "false_alarms": [
+      0,
+      24
+    ],
+    "possible": 0,
+    "proved": [
+      0,
+      122
+    ],
+    "fully": [
+      0,
+      24
+    ],
+    "attempted": 0,
+    "cost_mean": 0.07766972222222222,
+    "cost_total": 5.59222,
+    "wall_mean": 15.18741115744423,
+    "wall_median": 13.138412332998996,
+    "fixes": [
+      0,
+      48,
+      0
+    ],
+    "mutation": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "prove_cost_mean": 0,
+    "prove_secs_mean": 0
+  },
+  "X-examples": {
+    "name": "X-examples",
+    "runs": 72,
+    "errors": 0,
+    "caught": [
+      48,
+      48
+    ],
+    "confirmed": [
+      47,
+      48
+    ],
+    "rare": [
+      9,
+      9
+    ],
+    "hidden": [
+      28,
+      28
+    ],
+    "false_alarms": [
+      0,
+      24
+    ],
+    "possible": 0,
+    "proved": [
+      0,
+      111
+    ],
+    "fully": [
+      0,
+      24
+    ],
+    "attempted": 0,
+    "cost_mean": 0.06431263055555556,
+    "cost_total": 4.6305094,
+    "wall_mean": 56.57547794847172,
+    "wall_median": 50.75187843749882,
+    "fixes": [
+      0,
+      48,
+      0
+    ],
+    "mutation": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "prove_cost_mean": 0,
+    "prove_secs_mean": 0
+  },
+  "N-nodoc": {
+    "name": "N-nodoc",
+    "runs": 24,
+    "errors": 0,
+    "caught": [
+      0,
+      0
+    ],
+    "confirmed": [
+      0,
+      0
+    ],
+    "rare": [
+      0,
+      0
+    ],
+    "hidden": [
+      0,
+      0
+    ],
+    "false_alarms": [
+      1,
+      24
+    ],
+    "possible": 0,
+    "proved": [
+      0,
+      122
+    ],
+    "fully": [
+      0,
+      24
+    ],
+    "attempted": 0,
+    "cost_mean": 0.07440885,
+    "cost_total": 1.7858124,
+    "wall_mean": 62.215029246416634,
+    "wall_median": 57.25070837450403,
+    "fixes": [
+      0,
+      0,
+      0
+    ],
+    "mutation": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "prove_cost_mean": 0,
+    "prove_secs_mean": 0
+  },
+  "C-low": {
+    "name": "C-low",
+    "runs": 36,
+    "errors": 0,
+    "caught": [
+      24,
+      24
+    ],
+    "confirmed": [
+      21,
+      24
+    ],
+    "rare": [
+      3,
+      3
+    ],
+    "hidden": [
+      15,
+      15
+    ],
+    "false_alarms": [
+      0,
+      12
+    ],
+    "possible": 0,
+    "proved": [
+      0,
+      50
+    ],
+    "fully": [
+      0,
+      12
+    ],
+    "attempted": 0,
+    "cost_mean": 0.0514044,
+    "cost_total": 1.8505584,
+    "wall_mean": 34.95217573494402,
+    "wall_median": 32.65958472949569,
+    "fixes": [
+      0,
+      24,
+      0
+    ],
+    "mutation": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "prove_cost_mean": 0,
+    "prove_secs_mean": 0
+  },
+  "B-haiku": {
+    "name": "B-haiku",
+    "runs": 72,
+    "errors": 4,
+    "caught": [
+      45,
+      48
+    ],
+    "confirmed": [
+      42,
+      48
+    ],
+    "rare": [
+      9,
+      9
+    ],
+    "hidden": [
+      28,
+      28
+    ],
+    "false_alarms": [
+      0,
+      24
+    ],
+    "possible": 0,
+    "proved": [
+      0,
+      90
+    ],
+    "fully": [
+      0,
+      24
+    ],
+    "attempted": 0,
+    "cost_mean": 0.1397807875,
+    "cost_total": 10.0642167,
+    "wall_mean": 228.65527894672334,
+    "wall_median": 183.17772581250028,
+    "fixes": [
+      0,
+      45,
+      0
+    ],
+    "mutation": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "prove_cost_mean": 0,
+    "prove_secs_mean": 0
+  },
+  "B-opus": {
+    "name": "B-opus",
+    "runs": 36,
+    "errors": 0,
+    "caught": [
+      24,
+      24
+    ],
+    "confirmed": [
+      23,
+      24
+    ],
+    "rare": [
+      3,
+      3
+    ],
+    "hidden": [
+      15,
+      15
+    ],
+    "false_alarms": [
+      0,
+      12
+    ],
+    "possible": 0,
+    "proved": [
+      0,
+      73
+    ],
+    "fully": [
+      0,
+      12
+    ],
+    "attempted": 0,
+    "cost_mean": 0.09148884722222222,
+    "cost_total": 3.2935985,
+    "wall_mean": 40.931586108694724,
+    "wall_median": 37.709379416490265,
+    "fixes": [
+      0,
+      24,
+      0
+    ],
+    "mutation": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "prove_cost_mean": 0,
+    "prove_secs_mean": 0
+  },
+  "F-final": {
+    "name": "F-final",
+    "runs": 72,
+    "errors": 0,
+    "caught": [
+      48,
+      48
+    ],
+    "confirmed": [
+      41,
+      48
+    ],
+    "rare": [
+      9,
+      9
+    ],
+    "hidden": [
+      28,
+      28
+    ],
+    "false_alarms": [
+      0,
+      24
+    ],
+    "possible": 0,
+    "proved": [
+      0,
+      122
+    ],
+    "fully": [
+      0,
+      24
+    ],
+    "attempted": 0,
+    "cost_mean": 0.08974160277777778,
+    "cost_total": 6.4613954,
+    "wall_mean": 62.3356474768333,
+    "wall_median": 30.973659000501357,
+    "fixes": [
+      46,
+      48,
+      48
+    ],
+    "mutation": [
+      400,
+      412,
+      12,
+      332
+    ],
+    "prove_cost_mean": 0,
+    "prove_secs_mean": 0
+  }
+}
