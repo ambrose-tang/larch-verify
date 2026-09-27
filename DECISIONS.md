@@ -238,4 +238,33 @@ languages from the 1980s.
 
 ## Eval-driven decisions
 
-See [EVALS.md](EVALS.md) for the data. Summaries are appended below as experiments complete.
+The data is in [EVALS.md](EVALS.md). Each choice below won a head-to-head comparison on
+the 72-variant benchmark.
+
+**E1. Model the documented intent, not the code (`--formalize-mode auto`).** Intent
+caught 48/48 bugs, hybrid 46/48 (it copied a bug from the code into the model), and
+transliterate 6/48, all with 0 false alarms. `auto` uses intent when the function has at
+least 8 words of documentation and hybrid otherwise. With docstrings stripped, hybrid
+had 1/24 false alarms (Experiment N).
+
+**E2. Check documented examples (on by default).** Same 48/48, 21% cheaper because
+models that contradicted an example were rejected before a repair round, and 19 findings
+became "contradicts the documented example …".
+
+**E3. Mixed input generation.** Type-directed generation alone caught 39/48. It cannot
+build valid version strings, policies or digit strings. LLM-written and mixed
+generation both caught 48/48. Mixed keeps a type-directed third for inputs the LLM does
+not imagine.
+
+**E4. Prove with portfolio, then an LLM repair loop at low effort.** The portfolio
+proved 61/122 specs at $0. Adding the repair loop reached 82/122 at $0.47 per function;
+sketch decomposition reached 74/122 at $0.46. `high` effort was ruled out by the pilot
+(up to $1.31 per call). There is a per-spec budget and a proof cache.
+
+**E5. Sonnet 5 for every stage.** Haiku 4.5 was more expensive per function (repair
+churn), missed 3 bugs to non-converging formalizations, and proved 63/122 against
+Sonnet's 82. Opus 5 matched Sonnet's detection at 23% higher cost.
+
+**E6. Low effort for formalization.** On half the benchmark it matched medium (24/24,
+0 false alarms) at 31% lower cost. This is the weakest-evidenced default, and
+`--effort` overrides it.
