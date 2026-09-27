@@ -9,34 +9,42 @@ thousands of random inputs. It is the approach AWS used to build
 testing), packaged so it works on a single Python function in about a minute.
 
 ```text
-$ larch verify billing/calendar.py::days_in_month
+$ larch verify examples/calendar_utils.py::is_leap_year
 
-● Read calendar.py::days_in_month  def days_in_month(year: int, month: int) -> int  (16 lines)
+● Read calendar_utils.py::is_leap_year  def is_leap_year(year: int) -> bool  (7 lines)
 
-● Formalize: write Lean model and specs  4 postconditions, 1 property  41.2s
-  ⎿  model compiles · tested on 312 inputs, no spec violations by the model
+● Formalize: write Lean model and specs  4 postconditions, 0 properties  21.5s
+  ⎿  model compiles · tested on 834 inputs, no spec violations by the model
+     implementation already disagrees with the model on 5 of 200 quick-test inputs
 
 ╭─ Proposed specification: please review ──────────────────────────────────────╮
-│  Assumes: nothing (all inputs; months outside 1..12 must raise ValueError)   │
-│   1. raises_iff_invalid_month   Raises ValueError exactly when month ∉ 1..12 │
-│   2. february_leap              February has 29 days iff the year is a leap  │
-│                                 year (div. by 4, centuries only if by 400)   │
-│   ...                                                                        │
+│  1. div4_required      If year is a leap year, it must be divisible by 4.    │
+│  2. century_rule       A year divisible by 100 but not 400 is not a leap year│
+│  3. not_div4_not_leap  If year is not divisible by 4, it is not a leap year. │
+│  4. div400_is_leap     If year is divisible by 400, it is a leap year.       │
+│  Note: in quick testing the implementation already violates: div400_is_leap  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
   [a]pprove all   [r]eject some   [e]dit (describe a change)   [l]ean view   [q]uit
   › a
 
-● Differential test: implementation vs. model  1,618 valid inputs · 12 disagreements
-● Prove 5 specs in Lean  5/5 proved
-● Mutation analysis: 31/33 mutants detected (94%) · 2 likely equivalent
+● Differential test: implementation vs. model  1,521 valid inputs · 5 disagreements
+● Prove 4 specs in Lean  4/4 proved  3.3s
+● Mutation analysis: are the specs and tests strong enough?  13/13 mutants detected (100%)
+● Propose a fix (validated against the verified model)  validated  9.2s
 
 ╭─ BUG FOUND ──────────────────────────────────────────────────────────────────╮
-│  Implementation violates an approved spec: days_in_month(1900, 2) returned   │
-│  29, expected 28.                                                            │
+│  Implementation violates an approved spec: is_leap_year(0) returned False,   │
+│  expected True.                                                              │
+│   ✓ proved  div400_is_leap  auto: grind · violated by implementation on 5    │
+│  ✗ Implementation violates an approved spec  (confirmed)                     │
+│     input           is_leap_year(0)                                          │
+│     implementation  False                                                    │
+│     verified model  True                                                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
  Proposed fix · validated against the verified model
-   -        leap = year % 4 == 0
-   +        leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+   -    return year % 4 == 0 and year % 100 != 0
+   +    return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+  $0.055 · 36s · 2 LLM calls
 ```
 
 ## Why
@@ -162,10 +170,20 @@ answer.
 
 ## How well does it work?
 
-See [EVALS.md](EVALS.md) for a benchmark of 24 real-world functions, each with 2
-seeded bugs, and the comparisons that chose Larch's defaults: formalization prompting,
-proof decomposition, test generation, model choice and effort. The design rationale is
-in [DECISIONS.md](DECISIONS.md).
+On a benchmark of 24 real-world functions, each with 2 seeded bugs ([EVALS.md](EVALS.md)):
+
+| | |
+|---|---|
+| seeded bugs caught | **48/48**, including all 28 not visible from docstring examples and all 9 that fire on under 5% of inputs |
+| false alarms on correct code | **0/24** (1/24 with docstrings stripped) |
+| specs proved in Lean | 82/122 (67%); half of them with no LLM call at all |
+| injected mutants caught | 400/412 (all 12 survivors likely equivalent); 81% caught by the specs alone |
+| fixes validated | 46/48 |
+| cost | about $0.09 and 1 minute per function to find bugs; proofs add about $0.47 |
+
+The comparisons that chose these defaults cover formalization prompting,
+proof decomposition, test generation, model choice and effort, and are in EVALS.md. The
+reasoning behind each design decision is in [DECISIONS.md](DECISIONS.md).
 
 ## Development
 
