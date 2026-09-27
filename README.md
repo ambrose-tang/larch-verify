@@ -106,7 +106,7 @@ approved.
 |---|---|---|
 | `--model` | `claude-sonnet-5` | LLM used for formalization, adjudication and fixes |
 | `--prover-model` | same as `--model` | LLM used for proofs |
-| `--effort` | `medium` | reasoning effort for formalization (`low`…`max`) |
+| `--effort` | `low` | reasoning effort for formalization (`low`…`max`) |
 | `--tests N` | 2000 | random inputs for differential testing |
 | `--mutants N` | 40 | injected bugs for mutation analysis |
 | `--budget USD` | 5 | hard cap on LLM spend per function |

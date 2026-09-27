@@ -194,3 +194,82 @@ raising. Python's `int()` quietly accepts a sign. This is a real behavioural qui
 not a bug by the benchmark's ground truth, so it is counted against Larch. In real use it
 surfaces during spec review, where the user sees "each part is a string of ASCII digits"
 and can reject that spec.
+
+### B. Model choice
+
+**Formalization** (bug detection). Haiku ran on the full benchmark. Opus is 2.5× the
+per-token price of Sonnet, so it ran on half the benchmark: every other function, 36
+variants. The Sonnet row for that half comes from the same runs as Experiment A.
+
+| model | functions | bugs caught | false alarms | errors | cost / fn | time / fn |
+|---|---|---|---|---|---|---|
+| Haiku 4.5 | all 24 | 45/48 (94%) | 0/24 | 4 | $0.140 | 229 s |
+| **Sonnet 5** | all 24 | **48/48** | 0/24 | 0 | $0.081 | 27 s |
+| Sonnet 5 | half (12) | 24/24 | 0/12 | 0 | $0.074 | 23 s |
+| Opus 5 | half (12) | 24/24 | 0/12 | 0 | $0.091 | 41 s |
+
+Haiku is cheaper per token but not per function. Its formalizations failed the compile
+and sanity checks more often, needed more repair rounds, and 4 variants never converged.
+Opus matched Sonnet at 23% higher cost.
+
+**Proving** (the same 24 correct variants and portfolio as Experiment D):
+
+| prover | specs proved | proof cost / fn | proof time / fn |
+|---|---|---|---|
+| Sonnet 5, low effort | **82/122** | **$0.47** | 296 s |
+| Haiku 4.5 | 63/122 | $0.62 | 704 s |
+
+Haiku added only 2 proofs beyond the free portfolio, and spent more doing it.
+**Decision:** Sonnet 5 for every stage. `--model`/`--prover-model` can switch to Opus
+for hard functions.
+
+### C. Reasoning effort for formalization
+
+The same half of the benchmark (36 variants), Sonnet 5:
+
+| effort | bugs caught | false alarms | cost / fn |
+|---|---|---|---|
+| medium | 24/24 | 0/12 | $0.074 |
+| **low** | 24/24 | 0/12 | **$0.051** |
+
+Low effort matched medium at 31% lower cost. (The pilot had already shown that `high`
+costs several times more for proofs.) **Decision:** the default formalization effort is
+`low`. This is the weakest-supported decision in this file: 36 variants, with both
+settings at the ceiling. `--effort medium` remains available for gnarly functions.
+
+## Final configuration (headline numbers)
+
+The defaults chosen above: `auto` formalization (intent when documented) with Sonnet 5,
+documented examples on, mixed test generation (2000 inputs), `portfolio+llm` proofs at
+low effort, and 40 mutants. The run `F-final` covers all 72 variants, with proof
+numbers from Experiment D:
+
+| metric | result |
+|---|---|
+| seeded bugs caught | **48/48 (100%)**: 28/28 not visible in the docstring, 9/9 firing on <5% of inputs |
+| false alarms on correct code | **0/24** (1/24 when docstrings are stripped, Experiment N) |
+| specs proved in Lean (checker-accepted, no sorry, no axioms) | 82/122 (67%); 9/24 functions fully proved |
+| mutation analysis on correct code | 400/412 injected bugs detected (97%). All 12 survivors behaved identically to the model on ~1000 extra inputs (likely equivalent). **332 (81%) were caught by the approved specs alone** |
+| fix proposals for caught bugs | 48 proposed; **46 validated** against the verified model |
+| cost / time per function | $0.09 and about 1 min (bug finding); proofs add $0.47 and about 5 min |
+
+## Limitations
+
+- The benchmark's functions are small, pure and well documented. Real code often has
+  vaguer documentation, and N measures only the no-docstring extreme.
+- Specs are auto-approved here. In real use a person reviews them, which should lower
+  false alarms further, but that is not measured.
+- One run per configuration. LLM outputs vary between runs, so differences of one or
+  two variants are within noise. The large gaps (transliterate vs intent,
+  type-directed vs LLM-written generation, Haiku vs Sonnet proving) are not.
+
+## Re-running
+
+```bash
+python -m bench.validate                       # ground truth
+./bench/launch.sh ./bench/expAll.sh bench/expAll.log   # comparisons (resumable)
+python -m bench.analyze A2-intent A2-hybrid A2-translit --detail
+python -m bench.analyze D2-portfolio D2-port+llm-low D2-port+sketch-low --proofs
+```
+Results live in `bench/runs/<experiment>/results.jsonl`. The LLM response cache makes
+re-analysis free.

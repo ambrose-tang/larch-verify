@@ -13,7 +13,7 @@ class Config:
     provider: str = "auto"  # auto | anthropic | claude-code
     model: str = "claude-sonnet-5"  # formalization / adjudication / fixes
     prover_model: str | None = None  # defaults to `model`
-    effort: str | None = "medium"
+    effort: str | None = "low"
     cache: bool = False
     budget_usd: float = 5.0
 
