@@ -33,6 +33,9 @@ def resolve_model(name: str) -> str:
 
 def price_for(model: str) -> tuple[float, float]:
     m = resolve_model(model)
+    for prefix in ("global.", "us.", "eu.", "apac.", "anthropic."):  # Bedrock IDs
+        if m.startswith(prefix):
+            m = m[len(prefix):]
     if m in PRICES:
         return PRICES[m]
     for key, val in PRICES.items():

@@ -26,6 +26,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+bedrock = ["anthropic[bedrock]"]
+vertex = ["anthropic[vertex]"]
 dev = ["pytest>=8"]
 
 [project.scripts]

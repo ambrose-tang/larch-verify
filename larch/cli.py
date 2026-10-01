@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import os
 import sys
 from pathlib import Path
@@ -24,9 +25,10 @@ def _parse_target(t: str) -> tuple[Path, list[str]]:
 
 def cmd_verify(args, console: Console) -> int:
     from .engine.session import verify_function
-    from .lang import ExtractError, language_for, supported_extensions
+    from .lang import ExtractError, language_for
     from .llm.base import UsageLimitError
     from .ui import RichUI, UI
+    from .util import project_root
 
     overrides = dict(
         provider=args.provider, model=args.model, prover_model=args.prover_model, effort=args.effort,
@@ -45,53 +47,104 @@ def cmd_verify(args, console: Console) -> int:
         overrides["cache"] = True
     reports = []
     ui = UI() if args.quiet else RichUI(console, verbose=args.verbose)
-    for target in args.targets:
+    plan = _plan_targets(args, console)
+    if plan is None:
+        return 3
+    configs: dict[Path, Config] = {}
+    for path, func in plan:
+        lang = language_for(path)
+        root = project_root(path)
+        if root not in configs:
+            configs[root] = Config.load(path.resolve().parent, **overrides)
+            configs[root].extra["fresh"] = bool(args.fresh)
+            configs[root].extra["reuse"] = bool(args.reuse)
+        cfg = configs[root]
+        try:
+            lang.extract(path, func)
+        except ExtractError as e:
+            console.print(f"[yellow]skipping {path.name}::{func}:[/] {e}")
+            continue
+        try:
+            report = verify_function(path, func, cfg, ui)
+        except UsageLimitError as e:
+            console.print(f"[red]✗ {e}.[/] Nothing was reported for {func}; re-run after the reset, "
+                          "or set ANTHROPIC_API_KEY to use the API instead.")
+            return 3
+        ui.final(report)
+        reports.append(report)
+        if report.findings and args.apply:
+            _maybe_apply(report, path, console, assume_yes=args.yes)
+    if args.json:
+        data = [r.to_json() for r in reports]
+        Path(args.json).write_text(json.dumps(data if len(data) != 1 else data[0], indent=2, default=str))
+    if args.sarif or args.junit or args.markdown:
+        from .outputs import write_outputs
+        from .util import repo_root
+
+        write_outputs(reports, repo_root(Path.cwd()), sarif=args.sarif, junit=args.junit, markdown=args.markdown)
+    if len(reports) > 1 and not args.quiet:
+        _summary_table(reports, console)
+    if not reports:
+        return 0 if (args.changed is not None and plan == []) else 3
+    return max(EXIT.get(r.verdict, 3) for r in reports)
+
+
+def _plan_targets(args, console: Console) -> list[tuple[Path, str]] | None:
+    """(file, function) pairs to verify. Directories expand to the functions `larch scan`
+    rates as ready; files to all their public functions; --changed keeps only functions
+    whose lines differ from the base revision. None means a usage error."""
+    from .lang import ExtractError, language_for, supported_extensions
+    from .repo import changed_functions, default_base_ref, scan
+    from .util import repo_root
+
+    targets = list(args.targets) or (["."] if args.changed is not None else [])
+    if not targets:
+        console.print("[red]error:[/] give a FILE, FILE::function or DIRECTORY (or --changed)")
+        return None
+    plan: list[tuple[Path, str]] = []
+    for target in targets:
         path, funcs = _parse_target(target)
         if not path.exists():
             console.print(f"[red]error:[/] {path} does not exist")
-            return 3
+            return None
+        if path.is_dir():
+            cands = [c for c in scan([path], include_tests=args.include_tests) if c.status == "ready"]
+            base = repo_root(path)
+            plan += [((base / c.file).resolve(), c.function) for c in cands]
+            continue
         lang = language_for(path)
         if lang is None:
             console.print(f"[red]error:[/] {path}: unsupported file type (supported: {', '.join(supported_extensions())})")
-            return 3
+            return None
         if not funcs:
             try:
                 funcs = lang.list_functions(path)
             except (SyntaxError, ExtractError) as e:
                 console.print(f"[red]error:[/] cannot parse {path}: {e}")
-                return 3
-            if args.k:
-                funcs = [f for f in funcs if args.k in f]
+                return None
             if not funcs:
                 console.print(f"[yellow]no public functions found in {path}[/]")
-                continue
-        cfg = Config.load(path.resolve().parent, **overrides)
-        cfg.extra["fresh"] = bool(args.fresh)
-        cfg.extra["reuse"] = bool(args.reuse)
-        for func in funcs:
-            try:
-                lang.extract(path, func)
-            except ExtractError as e:
-                console.print(f"[yellow]skipping {path.name}::{func}:[/] {e}")
-                continue
-            try:
-                report = verify_function(path, func, cfg, ui)
-            except UsageLimitError as e:
-                console.print(f"[red]✗ {e}.[/] Nothing was reported for {func}; re-run after the reset, "
-                              "or set ANTHROPIC_API_KEY to use the API instead.")
-                return 3
-            ui.final(report)
-            reports.append(report)
-            if report.findings and args.apply:
-                _maybe_apply(report, path, console, assume_yes=args.yes)
-    if args.json:
-        data = [r.to_json() for r in reports]
-        Path(args.json).write_text(json.dumps(data if len(data) != 1 else data[0], indent=2, default=str))
-    if len(reports) > 1 and not args.quiet:
-        _summary_table(reports, console)
-    if not reports:
-        return 3
-    return max(EXIT.get(r.verdict, 3) for r in reports)
+        plan += [(path.resolve(), f) for f in funcs]
+    if args.k:
+        plan = [(p, f) for p, f in plan if args.k in f]
+    if args.changed is not None:
+        root = repo_root(Path(targets[0].split("::")[0]))
+        ref = args.changed or default_base_ref(root)
+        try:
+            files = sorted({p for p, _ in plan})
+            cands = scan(files, include_tests=True, root=root)
+            touched = {((root / c.file).resolve(), c.function) for c in changed_functions(cands, root, ref)}
+        except ValueError as e:
+            console.print(f"[red]error:[/] {e}")
+            return None
+        plan = [(p, f) for p, f in plan if (p, f) in touched]
+        if not args.quiet:
+            console.print(f"[dim]{len(plan)} function(s) changed since {ref[:12]}[/]")
+    seen: set = set()
+    plan = [x for x in plan if not (x in seen or seen.add(x))]
+    if args.limit:
+        plan = plan[: args.limit]
+    return plan
 
 
 def _maybe_apply(report, path: Path, console: Console, assume_yes: bool) -> None:
@@ -217,6 +270,59 @@ def cmd_show(args, console: Console) -> int:
     return 0
 
 
+def cmd_scan(args, console: Console) -> int:
+    from rich.table import Table
+
+    from .repo import changed_functions, default_base_ref, scan
+    from .util import repo_root
+
+    paths = [Path(p) for p in (args.paths or ["."])]
+    for p in paths:
+        if not p.exists():
+            console.print(f"[red]error:[/] {p} does not exist")
+            return 3
+    root = repo_root(paths[0])
+    cands = scan(paths, include_tests=args.include_tests, root=root)
+    if args.changed is not None:
+        try:
+            cands = changed_functions(cands, root, args.changed or default_base_ref(root))
+        except ValueError as e:
+            console.print(f"[red]error:[/] {e}")
+            return 3
+    ready = [c for c in cands if c.status == "ready"]
+    skipped = [c for c in cands if c.status != "ready"]
+    if args.json:
+        Path(args.json).write_text(json.dumps({"root": str(root), "candidates": [c.to_json() for c in cands]}, indent=2))
+    by_lang: dict[str, int] = {}
+    for c in ready:
+        by_lang[c.language] = by_lang.get(c.language, 0) + 1
+    langs = ", ".join(f"{n} {lang}" for lang, n in sorted(by_lang.items()))
+    console.print(f"[bold]{len(ready)} verifiable function(s)[/]" + (f" ({langs})" if langs else "")
+                  + f", {len(skipped)} skipped, under {root}")
+    shown = ready if args.all else ready[: args.top]
+    if shown:
+        t = Table(box=None, padding=(0, 2), show_edge=False)
+        for col in ("score", "target", "lines", "docs"):
+            t.add_column(col, style="dim" if col in ("score", "lines") else None, overflow="fold")
+        for c in shown:
+            t.add_row(f"{c.score:.1f}", c.target, str(c.end_line - c.line + 1), "✓" if c.documented else "")
+        console.print(t)
+        if len(ready) > len(shown):
+            console.print(f"[dim]… {len(ready) - len(shown)} more (use --all or --json)[/]")
+    if skipped:
+        reasons: dict[str, int] = {}
+        for c in skipped:
+            key = re.sub(r"\s+", " ", re.sub(r"`[^`]*`|\([^)]*\)|\d+ lines", "", c.reason)).strip(" :") or c.reason
+            reasons[key] = reasons.get(key, 0) + 1
+        console.print("[dim]skipped: " + "; ".join(f"{n}× {r}" for r, n in sorted(reasons.items(), key=lambda kv: -kv[1])[:6]) + "[/]")
+        if args.all:
+            for c in skipped:
+                console.print(f"[dim]  · {c.target}: {c.reason}[/]")
+    if ready:
+        console.print(f"\nNext: [bold]larch verify {shown[0].target}[/]  or  [bold]larch verify {paths[0]} --limit 10[/]")
+    return 0
+
+
 def cmd_list(args, console: Console) -> int:
     from .lang import ExtractError, language_for
 
@@ -242,15 +348,19 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd")
 
     v = sub.add_parser("verify", help="verify functions (FILE.py::func, or FILE.py for all public functions)")
-    v.add_argument("targets", nargs="+")
+    v.add_argument("targets", nargs="*", help="FILE, FILE::function, or DIRECTORY (default with --changed: the repository)")
     v.add_argument("-k", help="only functions whose name contains this substring")
+    v.add_argument("--changed", nargs="?", const="", metavar="REF",
+                   help="only functions changed since REF (default: merge base with the default branch)")
+    v.add_argument("--limit", type=int, help="verify at most N functions")
+    v.add_argument("--include-tests", action="store_true", help="also consider functions in test files (directories)")
     v.add_argument("-y", "--yes", action="store_true", help="accept proposed specs without review (CI/benchmarks)")
     v.add_argument("--reuse", action="store_true", help="reuse previously approved specs without asking")
     v.add_argument("--fresh", action="store_true", help="ignore previously approved specs")
     v.add_argument("--apply", action="store_true", help="apply a validated fix to your file (asks first)")
     v.add_argument("--model", help="LLM for formalization, adjudication and fixes (default claude-sonnet-5)")
     v.add_argument("--prover-model", help="LLM for proofs (default: same as --model)")
-    v.add_argument("--provider", choices=["auto", "anthropic", "claude-code"])
+    v.add_argument("--provider", choices=["auto", "anthropic", "bedrock", "vertex", "claude-code"])
     v.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"])
     v.add_argument("--tests", type=int, help="random inputs for differential testing (default 2000)")
     v.add_argument("--mutants", type=int, help="max implementation mutants (default 40)")
@@ -271,18 +381,29 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--seed", type=int)
     v.add_argument("--cache", action="store_true", help="cache LLM responses on disk")
     v.add_argument("--json", help="write the report(s) as JSON to this path")
+    v.add_argument("--sarif", help="write findings as SARIF 2.1.0 (code scanning) to this path")
+    v.add_argument("--junit", help="write a JUnit XML report to this path")
+    v.add_argument("--markdown", help="write a Markdown summary (PR comment / $GITHUB_STEP_SUMMARY); '-' for stdout")
     v.add_argument("-v", "--verbose", action="store_true", help="show Lean statements during review")
     v.add_argument("-q", "--quiet", action="store_true", help="no terminal UI (use with --json)")
 
     d = sub.add_parser("doctor", help="check the Lean toolchain, proof checker and LLM provider")
     d.add_argument("--install", action="store_true", help="install the pinned Lean toolchain with elan if missing")
-    d.add_argument("--provider", choices=["auto", "anthropic", "claude-code"])
+    d.add_argument("--provider", choices=["auto", "anthropic", "bedrock", "vertex", "claude-code"])
 
     i = sub.add_parser("init", help="store approved specs in this project (.larch/specs) so they can be committed")
     i.add_argument("dir", nargs="?", default=".")
 
     s = sub.add_parser("show", help="show the report of a previous run (default: latest)")
     s.add_argument("run", nargs="?")
+
+    sc = sub.add_parser("scan", help="find and rank the functions in a repository that Larch can verify")
+    sc.add_argument("paths", nargs="*", help="directories or files (default: .)")
+    sc.add_argument("--top", type=int, default=25, help="show the N best candidates (default 25)")
+    sc.add_argument("--all", action="store_true", help="show every candidate and every skipped function with its reason")
+    sc.add_argument("--changed", nargs="?", const="", metavar="REF", help="only functions changed since REF")
+    sc.add_argument("--include-tests", action="store_true", help="include test files")
+    sc.add_argument("--json", help="write all candidates (with skip reasons) as JSON")
 
     ls = sub.add_parser("list", help="list the functions Larch can verify in a file")
     ls.add_argument("file")
@@ -298,6 +419,8 @@ def main(argv: list[str] | None = None) -> int:
             "[bold #d97757]✻ Larch[/] [dim]verification-guided development with Lean 4[/]\n\n"
             "  [bold]larch verify[/] path/to/file.py::function   verify one function\n"
             "  [bold]larch verify[/] path/to/file.py             verify every public function in a file\n"
+            "  [bold]larch scan[/] [repo]                         find the functions worth verifying in a repository\n"
+            "  [bold]larch verify --changed[/]                     verify the functions a branch changed (CI)\n"
             "  [bold]larch doctor --install[/]                   set up Lean and check your LLM access\n"
             "  [bold]larch show[/]                               show the last report\n\n"
             "[dim]Run `larch verify --help` for options.[/]"
@@ -314,6 +437,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_show(args, console)
         if args.cmd == "list":
             return cmd_list(args, console)
+        if args.cmd == "scan":
+            return cmd_scan(args, console)
     except KeyboardInterrupt:
         console.print("\n[dim]interrupted[/]")
         return 130

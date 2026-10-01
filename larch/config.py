@@ -10,7 +10,7 @@ from pathlib import Path
 @dataclass
 class Config:
     # LLM
-    provider: str = "auto"  # auto | anthropic | claude-code
+    provider: str = "auto"  # auto | anthropic | bedrock | vertex | claude-code
     model: str = "claude-sonnet-5"  # formalization / adjudication / fixes
     prover_model: str | None = None  # defaults to `model`
     effort: str | None = "low"
@@ -60,7 +60,8 @@ class Config:
     @classmethod
     def load(cls, project_dir: Path | None = None, **overrides) -> "Config":
         """Defaults < ~/.config/larch/config.toml < [tool.larch] in pyproject.toml <
-        .larch.toml < environment (LARCH_*) < explicit overrides (CLI flags)."""
+        .larch.toml < environment (LARCH_*) < explicit overrides (CLI flags). Project
+        files are the nearest ones at or above `project_dir`, up to the repository root."""
         cfg = cls()
         names = {f.name for f in fields(cls)}
         sources: list[dict] = []
@@ -68,12 +69,25 @@ class Config:
         if user.exists():
             sources.append(_read_toml(user))
         if project_dir is not None:
-            pp = project_dir / "pyproject.toml"
-            if pp.exists():
-                sources.append(_read_toml(pp).get("tool", {}).get("larch", {}))
-            lt = project_dir / ".larch.toml"
-            if lt.exists():
-                sources.append(_read_toml(lt))
+            # Nearest [tool.larch] and nearest .larch.toml, searching up to the repository
+            # root, so settings at a monorepo root apply to packages below it.
+            from .util import repo_root
+
+            d = Path(project_dir).resolve()
+            top = repo_root(d)
+            pyproject = larch_toml = None
+            for cand in [d, *d.parents]:
+                pp = cand / "pyproject.toml"
+                if pyproject is None and pp.exists():
+                    section = _read_toml(pp).get("tool", {}).get("larch")
+                    if section:
+                        pyproject = section
+                lt = cand / ".larch.toml"
+                if larch_toml is None and lt.exists():
+                    larch_toml = _read_toml(lt)
+                if cand == top:
+                    break
+            sources += [x for x in (pyproject, larch_toml) if x]
         env = {}
         for f in fields(cls):
             v = os.environ.get("LARCH_" + f.name.upper())

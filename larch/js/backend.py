@@ -43,9 +43,6 @@ JavaScript/TypeScript-to-Lean mapping (be exact; differential tests will catch a
   ints, str, bool, None, lists and tuples, which Larch converts to JavaScript values.
 """
 
-_SKIP_DIRS = {"node_modules", ".git", "dist", "build", "out", "coverage", ".next", ".turbo"}
-
-
 def _module(path: Path) -> Module:
     try:
         return Module(path.read_text())
@@ -443,11 +440,3 @@ def generate_mutants(info: FunctionInfo, *, max_mutants: int = 40, seed: int = 0
 JS = JavaScriptLanguage()
 TS = TypeScriptLanguage()
 
-
-def iter_source_files(root: Path, extensions: tuple[str, ...]):
-    """Source files under root, skipping dependency and build directories."""
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS and not d.startswith("."))
-        for f in sorted(filenames):
-            if f.endswith(extensions) and not f.endswith(".d.ts"):
-                yield Path(dirpath) / f
