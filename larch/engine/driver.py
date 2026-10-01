@@ -24,7 +24,7 @@ import traceback
 import warnings
 from pathlib import Path
 
-from larch.engine.impl_client import ImplClient, LoadError
+from larch.engine.impl_client import ImplClient, LoadError, child_env
 from larch.lean.harness_client import HarnessClient, HarnessError, HarnessTimeout
 from larch.lean.types import EncodeError, decode, encode, parse_type, perturb, strategy_for
 
@@ -601,7 +601,7 @@ def main(argv: list[str]) -> int:
     os.dup2(log, 2)
     sys.dont_write_bytecode = True
     h = job["harness"]
-    harness = HarnessClient(h["cmd"], h["env"], h["cwd"], timeout=float(h.get("timeout", 10.0)), stderr_path=job.get("log_path"))
+    harness = HarnessClient(h["cmd"], child_env(h["env"]), h["cwd"], timeout=float(h.get("timeout", 10.0)), stderr_path=job.get("log_path"))
     impl = Impl(job) if job.get("impl") else None
     try:
         harness.start()

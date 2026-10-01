@@ -242,3 +242,28 @@ def test_adapter_runs_on_other_python_versions(tmp_path, version):
     with c:
         c.load(rt.load)
         assert c.call([5, 0, 3], 2.0) == {"status": "ok", "value": 3}
+
+
+def test_job_files_do_not_contain_the_environment(tmp_path, monkeypatch):
+    """Job files are kept as run artifacts: they must not capture credentials."""
+    from larch.lean.toolchain import ToolchainError, find_toolchain
+
+    try:
+        find_toolchain()
+    except ToolchainError:
+        pytest.skip("pinned Lean toolchain not installed")
+    from test_integration import CLAMP_OK, _cfg, fake_llm
+
+    from larch.engine.session import verify_function
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-must-not-leak")
+    (tmp_path / ".git").mkdir()
+    f = tmp_path / "clamp.py"
+    f.write_text(CLAMP_OK)
+    cfg = _cfg(tmp_path)
+    cfg.run_mutation = False
+    cfg.run_proofs = False
+    report = verify_function(f, "clamp", cfg, llm=fake_llm())
+    assert report.drt["valid"] > 0, report.error
+    jobs = list(Path(report.artifacts_dir).rglob("job*.json"))
+    assert jobs and not any("sk-test-must-not-leak" in j.read_text() for j in jobs)

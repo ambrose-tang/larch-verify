@@ -162,6 +162,7 @@ def test_junit(tmp_path):
 def test_markdown_summary(tmp_path):
     md = to_markdown_summary(_reports(tmp_path), tmp_path)
     assert "1 bug(s) found in 3 function(s)" in md and "```diff" in md and "`src/c.py::clamp`" in md
+    assert "No functions to verify" in to_markdown_summary([], tmp_path)
 
 
 # -- providers -----------------------------------------------------------------------------------

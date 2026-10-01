@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 
 from ..lang import Runtime
-from .impl_client import AdapterError, ImplClient, LoadError
+from .impl_client import _UNSET, USER_PYTHONPATH, AdapterError, ImplClient, LoadError
 
 _LARCH_PARENT = str(Path(__file__).resolve().parent.parent.parent)
 
@@ -43,6 +43,7 @@ class JobRunner:
         # Make `larch` importable in the driver even from a source checkout. This only
         # affects Larch's own interpreter, never the project's.
         pp = env.get("PYTHONPATH")
+        env[USER_PYTHONPATH] = pp if pp is not None else _UNSET  # restored for the user's processes
         env["PYTHONPATH"] = _LARCH_PARENT + (os.pathsep + pp if pp else "")
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         env["PYTHONHASHSEED"] = "0"

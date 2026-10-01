@@ -156,7 +156,7 @@ class JavaScriptLanguage(Language):
             executable=node,
             source=why,
             cmd=[node, *flags, str(ADAPTER)],
-            env=dict(os.environ),
+            env={},
             load={"path": str(info.path), "function": info.name, "binding": binding, "member": member or None,
                   "arg_kinds": [{"bigint": k["bigint"], "undef": k["undef"]} for k in kinds]},
             int_bound=None if bigint_only else SAFE_INT,

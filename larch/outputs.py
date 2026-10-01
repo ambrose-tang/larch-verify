@@ -115,6 +115,9 @@ def to_junit(reports: list[Report], root: Path) -> str:
 
 
 def to_markdown_summary(reports: list[Report], root: Path) -> str:
+    if not reports:
+        return ("## Larch verification\n\nNo functions to verify (nothing changed, or no changed function has "
+                "approved specs in `.larch/specs`).\n")
     icon = {"passed": "✅", "bug": "❌", "partial": "🟡", "error": "⚠️"}
     bugs = [r for r in reports if r.verdict == "bug"]
     head = (f"**Larch: {len(bugs)} bug(s) found in {len(reports)} function(s)**" if bugs

@@ -43,13 +43,19 @@ def cmd_verify(args, console: Console) -> int:
         overrides["run_mutation"] = False
     if args.no_fix:
         overrides["propose_fixes"] = False
+    if args.no_proofs:
+        overrides["run_proofs"] = False
     if args.cache:
         overrides["cache"] = True
     reports = []
+    if args.approved_only:
+        args.reuse = True
     ui = UI() if args.quiet else RichUI(console, verbose=args.verbose)
     plan = _plan_targets(args, console)
     if plan is None:
         return 3
+    if not plan and not args.quiet:
+        console.print("[yellow]nothing to verify[/] (see `larch scan` for candidates)")
     configs: dict[Path, Config] = {}
     for path, func in plan:
         lang = language_for(path)
@@ -85,7 +91,7 @@ def cmd_verify(args, console: Console) -> int:
     if len(reports) > 1 and not args.quiet:
         _summary_table(reports, console)
     if not reports:
-        return 0 if (args.changed is not None and plan == []) else 3
+        return 0 if ((args.changed is not None or args.approved_only) and plan == []) else 3
     return max(EXIT.get(r.verdict, 3) for r in reports)
 
 
@@ -142,6 +148,19 @@ def _plan_targets(args, console: Console) -> list[tuple[Path, str]] | None:
             console.print(f"[dim]{len(plan)} function(s) changed since {ref[:12]}[/]")
     seen: set = set()
     plan = [x for x in plan if not (x in seen or seen.add(x))]
+    if args.approved_only:
+        from .engine.store import load_approved
+
+        kept = []
+        for p, f in plan:
+            try:
+                if load_approved(language_for(p).extract(p, f)) is not None:
+                    kept.append((p, f))
+            except ExtractError:
+                continue
+        if not args.quiet and len(kept) < len(plan):
+            console.print(f"[dim]{len(plan) - len(kept)} function(s) without approved specs skipped (--approved-only)[/]")
+        plan = kept
     if args.limit:
         plan = plan[: args.limit]
     return plan
@@ -357,6 +376,8 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("-y", "--yes", action="store_true", help="accept proposed specs without review (CI/benchmarks)")
     v.add_argument("--reuse", action="store_true", help="reuse previously approved specs without asking")
     v.add_argument("--fresh", action="store_true", help="ignore previously approved specs")
+    v.add_argument("--approved-only", action="store_true",
+                   help="only functions with specs a person approved (in .larch/specs); implies --reuse (CI)")
     v.add_argument("--apply", action="store_true", help="apply a validated fix to your file (asks first)")
     v.add_argument("--model", help="LLM for formalization, adjudication and fixes (default claude-sonnet-5)")
     v.add_argument("--prover-model", help="LLM for proofs (default: same as --model)")
@@ -365,7 +386,9 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--tests", type=int, help="random inputs for differential testing (default 2000)")
     v.add_argument("--mutants", type=int, help="max implementation mutants (default 40)")
     v.add_argument("--no-mutation", action="store_true")
-    v.add_argument("--no-fix", action="store_true")
+    v.add_argument("--no-fix", action="store_true", help="do not propose fixes")
+    v.add_argument("--no-proofs", action="store_true",
+                   help="skip proving (re-test approved specs only; the verdict is then at best `partial`)")
     v.add_argument("--budget", type=float, help="max LLM spend in USD per function (default 5)")
     v.add_argument("--python", help="Python interpreter or virtualenv for your code (default: discovered: project venv, "
                    "$VIRTUAL_ENV, conda, poetry/pipenv/pdm/hatch, PATH)")

@@ -82,7 +82,8 @@ class LeanWorkspace:
         return [str(self.tc.lean), "--run", str(self.path(self.HARNESS))]
 
     def harness_env(self) -> dict[str, str]:
-        env = self.tc.env(self.lean_path)
+        """Environment overrides for the harness (the rest is inherited)."""
+        env = {k: v for k, v in self.tc.env(self.lean_path).items() if k in ("LEAN_SYSROOT", "LEAN_PATH")}
         # Specs may index out of bounds on *wrong* outputs (e.g. perturbed or buggy
         # results); `xs[i]!` then panics (returning `default`, exactly as the logic
         # says). Symbolicated backtraces make each panic ~20ms, so turn them off.

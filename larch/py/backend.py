@@ -118,8 +118,7 @@ class PythonLanguage(Language):
             raise RuntimeEnvError(str(e)) from e
         extra = cfg.pythonpath.split(os.pathsep) if isinstance(cfg.pythonpath, str) else list(cfg.pythonpath or [])
         sys_path, module, package = import_layout(info.path, [e for e in extra if e])
-        penv = dict(os.environ)
-        penv.update(PYTHONDONTWRITEBYTECODE="1", PYTHONHASHSEED="0", PYTHONIOENCODING="utf-8")
+        penv = {"PYTHONDONTWRITEBYTECODE": "1", "PYTHONHASHSEED": "0", "PYTHONIOENCODING": "utf-8"}
         return Runtime(
             language=self.name,
             display=f"Python {env.version_str}",

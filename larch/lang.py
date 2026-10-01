@@ -81,7 +81,7 @@ class Runtime:
     executable: str
     source: str  # why this runtime was chosen
     cmd: list[str]  # adapter command; the log path is appended
-    env: dict[str, str]
+    env: dict[str, str]  # overrides on top of the inherited environment
     load: dict  # the adapter's load request (path, function, ...)
     int_bound: int | None = None  # largest integer magnitude the runtime handles exactly
     warnings: list[str] = field(default_factory=list)

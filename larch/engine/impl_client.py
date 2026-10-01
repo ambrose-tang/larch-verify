@@ -15,6 +15,25 @@ import time
 from ..wire import from_wire, to_wire
 
 
+USER_PYTHONPATH = "LARCH_USER_PYTHONPATH"  # the user's PYTHONPATH, saved while the driver runs
+_UNSET = "<larch:unset>"
+
+
+def child_env(overrides: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for a process that runs on the user's behalf (an adapter, the Lean
+    harness): this process's environment with the user's own PYTHONPATH restored, plus
+    `overrides`. Jobs carry only the overrides, so no credentials are written to disk."""
+    env = dict(os.environ)
+    if USER_PYTHONPATH in env:
+        saved = env.pop(USER_PYTHONPATH)
+        if saved == _UNSET:
+            env.pop("PYTHONPATH", None)
+        else:
+            env["PYTHONPATH"] = saved
+    env.update(overrides or {})
+    return env
+
+
 class AdapterError(RuntimeError):
     """The adapter could not be started or answered nonsense (an environment problem)."""
 
@@ -34,8 +53,9 @@ class LoadError(RuntimeError):
 class ImplClient:
     def __init__(self, cmd: list[str], env: dict[str, str], cwd: str, log_path: str | None = None,
                  start_timeout: float = 60.0):
+        """`env` holds overrides on top of the inherited environment (see child_env)."""
         self.cmd = cmd
-        self.env = env
+        self.env = child_env(env)
         self.cwd = cwd
         self.log_path = log_path
         self.start_timeout = start_timeout
