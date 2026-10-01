@@ -95,7 +95,7 @@ class JobRunner:
         if result_path.exists():
             return json.loads(result_path.read_text())
         partial = Path(str(result_path) + ".partial")
-        if job["kind"] == "mutants" and partial.exists():
+        if job["kind"].endswith("mutants") and partial.exists():
             done = [json.loads(line) for line in partial.read_text().splitlines() if line.strip()]
             return {"ok": False, "partial": done, "error": f"worker exited ({rc}): {err[-500:] if err else ''}"}
         log = Path(job["log_path"])

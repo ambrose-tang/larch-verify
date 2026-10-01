@@ -32,7 +32,11 @@ class Config:
     model_repairs: int = 2
     tests: int = 2000
     exhaustive_limit: int = 100_000  # test every input when the proved-finite domain has at most this many
+    sequences: int = 500  # random call sequences per class (stateful components)
+    max_steps: int = 10  # calls per random sequence
+    exhaustive_sequences: int = 20_000  # bounded-exhaustive call sequences over small domains
     mutants: int = 40
+    service_mutants: int = 8  # mutants per service (each runs a copy of the service)
     mutation_tests: int = 300
     call_timeout: float = 1.0
     parallel: int = 4

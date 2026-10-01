@@ -42,6 +42,7 @@ class Candidate:
     score: float = 0.0
     documented: bool = False
     annotated: bool = False
+    kind: str = "function"  # function | component (a class)
 
     @property
     def target(self) -> str:
@@ -210,6 +211,48 @@ def assess(info: FunctionInfo) -> tuple[str, str, float]:
     return "ready", "", round(score, 2)
 
 
+def assess_class(info) -> tuple[str, str, float]:
+    """(status, reason, score) for a class: every public method must use supported types
+    and the code must not do I/O (its own state, via self/this, is the point)."""
+    lang = info.language
+    for p in info.params:
+        prob = _type_problem(p.annotation, lang)
+        if prob:
+            return "skipped", f"constructor parameter `{p.name}` {prob}", 0.0
+    for m in info.methods:
+        for p in m.params:
+            prob = _type_problem(p.annotation, lang)
+            if prob:
+                return "skipped", f"{m.name}(): parameter `{p.name}` {prob}", 0.0
+        if m.returns not in (None, "None", "void"):
+            prob = _type_problem(m.returns, lang)
+            if prob:
+                return "skipped", f"{m.name}(): result {prob}", 0.0
+    body = re.sub(r"\b(self|this)\.", "", _code_only(info))
+    hit = (_PY_IMPURE if lang == "python" else _JS_IMPURE).search(body)
+    if hit:
+        return "skipped", f"looks impure (`{hit.group(0).strip()}`)", 0.0
+    score = 1.5 + (2.0 if info.docstring else 0.0) + min(2.0, 0.4 * len(info.methods))
+    score += min(2.0, len(_BRANCH.findall(body)) * 0.25)
+    return "ready", "", round(score, 2)
+
+
+def _class_names(lang: Language, path: Path) -> list[str]:
+    if lang.name == "python":
+        from .py.extract import list_classes
+
+        return list_classes(path)
+    from .js.parse import Module
+
+    mod = Module(path.read_text())
+    out = []
+    for c in mod.classes:
+        head = " ".join(t.text for t in mod.toks[c.start_tok: c.start_tok + 8])
+        if not c.name.startswith("_") and not re.search(r"\bextends\s+\w*(Error|Exception)\b", head):
+            out.append(c.name)
+    return out
+
+
 def _all_function_names(lang: Language, path: Path) -> list[str]:
     """Every function the backend can see (including ones it would refuse), so the
     scan can say why something is skipped."""
@@ -255,6 +298,22 @@ def scan(paths: list[Path], *, include_tests: bool = False, root: Path | None = 
                 rel, name, lang.name, info.lineno, info.end_lineno, status, reason, score,
                 documented=bool(info.docstring), annotated=all(p.annotation for p in info.params),
             ))
+        try:
+            classes = _class_names(lang, f)
+        except Exception:  # noqa: BLE001
+            classes = []
+        for name in classes:
+            try:
+                info = lang.extract_class(f, name)
+            except ExtractError as e:
+                out.append(Candidate(rel, name, lang.name, 0, 0, "skipped", str(e), kind="component"))
+                continue
+            except Exception as e:  # noqa: BLE001
+                out.append(Candidate(rel, name, lang.name, 0, 0, "skipped", f"cannot analyse: {str(e)[:120]}", kind="component"))
+                continue
+            status, reason, score = assess_class(info)
+            out.append(Candidate(rel, name, lang.name, info.lineno, info.end_lineno, status, reason, score,
+                                 documented=bool(info.docstring), kind="component"))
     out.sort(key=lambda c: (c.status != "ready", -c.score, c.file, c.line))
     return out
 

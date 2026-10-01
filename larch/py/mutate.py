@@ -170,7 +170,7 @@ class _Replace(ast.NodeTransformer):
 
 def generate_mutants(info: FunctionInfo, *, max_mutants: int = 40, seed: int = 0) -> list[Mutant]:
     tree = ast.parse(info.source.strip("\n") if info.col_offset == 0 else _dedent(info.source))
-    fn = next(n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)))
+    fn = next(n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)))
     original = ast.unparse(fn)
     sites = _sites(fn)
     seen = {original}

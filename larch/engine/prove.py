@@ -108,12 +108,28 @@ def portfolio_scripts(spec: FormalSpec, name: str) -> list[tuple[str, str]]:
     return scripts
 
 
+def _module_text(spec) -> str:
+    if getattr(spec, "kind", "") == "component":
+        from ..component import module_text
+
+        return module_text(spec)
+    return model_module(spec)
+
+
+def _statement(spec, name: str) -> str:
+    if getattr(spec, "kind", "") == "component":
+        from ..component import statement
+
+        return statement(spec, name)
+    return statement_text(spec, name)
+
+
 class Prover:
     def __init__(self, ctx: RunContext, spec: FormalSpec):
         self.ctx = ctx
         self.spec = spec
         self.cfg = ctx.cfg
-        self.model_text = model_module(spec)
+        self.model_text = _module_text(spec)
         self.schedule = [e.strip() for e in (self.cfg.prover_efforts or "").split(",") if e.strip()]
         self._spent: dict[str, float] = {}
 
@@ -176,7 +192,12 @@ class Prover:
 
     # -- strategies -----------------------------------------------------------------------------
     def portfolio(self, name: str) -> tuple[ProofResult | None, str]:
-        scripts = portfolio_scripts(self.spec, name)
+        if getattr(self.spec, "kind", "") == "component":
+            from ..component import portfolio_scripts as component_scripts
+
+            scripts = component_scripts(self.spec, name)
+        else:
+            scripts = portfolio_scripts(self.spec, name)
         first_err = ""
         results: dict[str, tuple[bool, str]] = {}
         with ThreadPoolExecutor(max_workers=min(len(scripts), 4)) as ex:
@@ -194,7 +215,7 @@ class Prover:
 
     def llm_loop(self, name: str, automation: str | None, budget_attempts: int | None = None) -> ProofResult:
         header = theorem_header(name)
-        statement = statement_text(self.spec, name)
+        statement = _statement(self.spec, name)
         english = self.spec.english_of(name)
         attempts: list[tuple[str, str]] = []
         n = budget_attempts or self.cfg.proof_attempts
@@ -225,7 +246,7 @@ class Prover:
     def sketch(self, name: str, automation: str | None) -> ProofResult:
         """Draft-sketch-prove decomposition."""
         header = theorem_header(name)
-        statement = statement_text(self.spec, name)
+        statement = _statement(self.spec, name)
         english = self.spec.english_of(name)
         attempts: list[tuple[str, str]] = []
         for i in range(2):

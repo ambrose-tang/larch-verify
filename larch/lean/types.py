@@ -149,7 +149,7 @@ def encode(value, t: LType):
             raise EncodeError("expected a single character")
         return value
     if h == "Unit":
-        return []
+        return {}  # Lean's ToJson Unit
     if h in ("List", "Array"):
         if isinstance(value, (str, bytes, dict, set, frozenset)) or not hasattr(value, "__iter__"):
             raise EncodeError(f"expected a sequence for {h}, got {type(value).__name__}")

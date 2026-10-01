@@ -79,6 +79,7 @@ function describeError(e) {
 // --- loading -------------------------------------------------------------------------------------
 let fn = null;
 let kinds = [];
+let methodKinds = {};
 let counter = 0;
 
 async function load(req) {
@@ -103,6 +104,7 @@ async function load(req) {
     if (typeof target !== 'function') throw new TypeError(`${req.function} is not a function`);
     fn = target;
     kinds = req.arg_kinds || [];
+    methodKinds = req.method_kinds || {};
     return { ok: true };
   } catch (e) {
     const msg = describeError(e);
@@ -122,28 +124,74 @@ async function load(req) {
 // --- calling -------------------------------------------------------------------------------------
 const callScript = new vm.Script('globalThis.__larch_call()');
 
+function run(thunk, timeout) {
+  globalThis.__larch_call = thunk;
+  let value;
+  try {
+    // vm's watchdog interrupts synchronous infinite loops anywhere in the call.
+    value = callScript.runInThisContext({ timeout: Math.max(1, Math.round(1000 * (timeout || 1))) });
+  } catch (e) {
+    if (e && e.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') return [{ status: 'timeout' }, undefined];
+    if (e instanceof RangeError && /call stack/i.test(e.message)) return [{ status: 'exception', exc: `RangeError: ${e.message}` }, undefined];
+    return [{ status: 'exception', exc: describeError(e).slice(0, 300) }, undefined];
+  } finally {
+    globalThis.__larch_call = undefined;
+  }
+  return [{ status: 'ok', value: toWire(value) }, value];
+}
+
+function decodeArgs(req, argKinds) {
+  return (req.args || []).map((a, i) => fromWire(a, argKinds[i] || {}));
+}
+
 function call(req) {
   if (!fn) return { status: 'exception', exc: 'LarchError: no function loaded' };
   let args;
   try {
-    args = (req.args || []).map((a, i) => fromWire(a, kinds[i] || {}));
+    args = decodeArgs(req, kinds);
   } catch (e) {
     return { status: 'exception', exc: `LarchError: ${describeError(e)}` };
   }
   const f = fn;
-  globalThis.__larch_call = () => f(...args);
-  let value;
+  return run(() => f(...args), req.timeout)[0];
+}
+
+// --- objects (stateful components) -----------------------------------------------------------------
+let obj = null;
+
+function construct(req) {
+  obj = null;
+  if (!fn) return { status: 'exception', exc: 'LarchError: no class loaded' };
+  const Cls = fn;
+  const args = decodeArgs(req, kinds);
+  const [res, value] = run(() => new Cls(...args), req.timeout || 2);
+  if (res.status !== 'ok') return res;
+  obj = value;
+  return { status: 'ok' };
+}
+
+function invoke(req) {
+  if (obj == null) return { status: 'exception', exc: 'LarchError: no instance' };
+  const target = obj;
+  let args;
   try {
-    // vm's watchdog interrupts synchronous infinite loops anywhere in the call.
-    value = callScript.runInThisContext({ timeout: Math.max(1, Math.round(1000 * (req.timeout || 1))) });
+    args = decodeArgs(req, (methodKinds && methodKinds[req.method]) || []);
   } catch (e) {
-    if (e && e.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') return { status: 'timeout' };
-    if (e instanceof RangeError && /call stack/i.test(e.message)) return { status: 'exception', exc: `RangeError: ${e.message}` };
-    return { status: 'exception', exc: describeError(e).slice(0, 300) };
-  } finally {
-    globalThis.__larch_call = undefined;
+    return { status: 'exception', exc: `LarchError: ${describeError(e)}` };
   }
-  return { status: 'ok', value: toWire(value) };
+  if (typeof target[req.method] !== 'function') return { status: 'exception', exc: `TypeError: ${req.method} is not a method` };
+  return run(() => target[req.method](...args), req.timeout)[0];
+}
+
+function observe(req) {
+  if (obj == null) return { status: 'exception', exc: 'LarchError: no instance' };
+  const target = obj;
+  const out = {};
+  for (const o of req.observers || []) {
+    const thunk = o.access === 'call' ? () => target[o.name]() : () => target[o.name];
+    out[o.name] = run(thunk, req.timeout)[0];
+  }
+  return { status: 'ok', observers: out };
 }
 
 function ping() {
@@ -168,6 +216,9 @@ process.stdin.on('data', (chunk) => {
         if (req.op === 'ping') resp = ping();
         else if (req.op === 'load') resp = await load(req);
         else if (req.op === 'call') resp = call(req);
+        else if (req.op === 'new') resp = construct(req);
+        else if (req.op === 'invoke') resp = invoke(req);
+        else if (req.op === 'observe') resp = observe(req);
         else resp = { ok: false, error: `unknown op ${req.op}` };
       } catch (e) {
         resp = { ok: false, error: `adapter error: ${describeError(e)}` };

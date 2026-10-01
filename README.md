@@ -149,6 +149,35 @@ postcondition that held on every output holds for the code itself, not only for 
 model. Larger domains fall back to differential random testing; the limit is
 `exhaustive_limit` (default 100,000 inputs).
 
+### Stateful components (classes)
+
+Put a class under a heading (`## shop/ledger.py::Ledger`) and Larch verifies the object,
+not just one call:
+
+- **The model is a Lean state machine:** a `State` structure, the constructor, one step
+  per public method (raising = failing without changing the state), and read-only
+  *observers* (such as `total()` or a `totalCents` getter).
+- **Invariants** ("no balance is ever negative") are proved for **every reachable
+  state**, meaning every state the object can get into through its constructor and any
+  sequence of calls. **Operation contracts** ("withdrawing more than the balance fails",
+  "a transfer never changes the total") are proved for every call from every such state.
+- **The real object is tested with call sequences:** random sequences, plus every
+  sequence up to a few calls over small argument pools. Results and observers are
+  compared with the model after every call, so a method that corrupts state and then
+  raises is caught at the next observation. Failures are shrunk to the shortest
+  sequence:
+
+  ```text
+  ✗ Implementation disagrees with the verified model  (likely)
+     calls  ledger = Ledger()
+            ledger.transfer('a', 'b', 1)
+            ledger.total()
+     implementation  1
+     verified model  0
+  ```
+- Mutation analysis and validated fixes work as for functions; a fix must agree with the
+  model on every sequence before it is offered.
+
 ## Team workflow
 
 1. **Write and approve contracts once.** `larch init` creates `.larch/` and drafts
@@ -319,9 +348,10 @@ permissions, like your tests), and Larch writes nothing into your repository.
 | | Python | TypeScript / JavaScript |
 |---|---|---|
 | functions | module-level functions, `@staticmethod`s | top-level `function`s, `const f = (…) =>`, static methods (exported or not) |
+| classes | public methods and `@property`s; `__init__` or `@dataclass` constructors | public methods and getters; constructors (incl. parameter properties) |
 | values | `int`, `bool`, `str`, single characters, lists, tuples, `Optional` | integer `number`s (within ±2^53−1), `bigint`, `boolean`, `string`, arrays, tuples, `null`/`undefined`/optional |
 | errors | documented exceptions | documented `throw`s |
-| not yet | floats, dicts, sets, objects and methods with state, I/O, async, generators, `*args` | non-integer numbers, objects/`Map`/`Date`, `this`, async, generators, rest/destructured parameters |
+| not yet | floats; dicts, sets and objects as arguments or results; I/O; async; generators; `*args` | non-integer numbers; objects/`Map`/`Date` as arguments or results; async; generators; rest/destructured parameters |
 
 Larch refuses these up front (and `larch scan` says why) rather than giving an
 unreliable answer. Linux and macOS are supported; Windows is not yet (use WSL).

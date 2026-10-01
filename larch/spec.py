@@ -465,3 +465,7 @@ def examples_from_json(text: str) -> list[dict]:
         if isinstance(e, dict) and isinstance(e.get("args"), list) and "expected" in e:
             out.append({"args": e["args"], "expected": e["expected"]})
     return out
+
+
+# Names Larch generates in component models; a model defining them would shadow them.
+FORBIDDEN_NAMES_RE = re.compile(r"^\s*(?:def|abbrev|inductive|theorem|structure)\s+(?:Reachable|pre_init|inv_\w+|post_\w+|spec_\w+)\b", re.M)

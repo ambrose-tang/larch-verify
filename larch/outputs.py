@@ -43,7 +43,11 @@ def to_sarif(reports: list[Report], root: Path) -> dict:
                 "helpUri": "https://github.com/ambrose-tang/larch-verify#what-gets-reported",
                 "properties": {"tags": ["correctness", "verification"]},
             })
-            lines = [f"{f.title()} ({f.confidence}): {fn}({f.args_repr}) returned {f.impl}, expected {f.model}."]
+            if r.kind == "function":
+                lines = [f"{f.title()} ({f.confidence}): {fn}({f.args_repr}) returned {f.impl}, expected {f.model}."]
+            else:
+                lines = [f"{f.title()} ({f.confidence}): after `{'; '.join(f.args_repr.splitlines())}` the code gives {f.impl}, "
+                         f"the verified model {f.model}."]
             if f.violated_specs:
                 lines.append("Violates: " + ", ".join(f.violated_specs) + ".")
             if f.explanation:
@@ -133,8 +137,12 @@ def to_markdown_summary(reports: list[Report], root: Path) -> str:
         for f in r.findings:
             if f.confidence not in ("confirmed", "likely"):
                 continue
-            L += [f"- **{f.title()}** ({f.confidence}): `{r.function.split('.')[-1]}({f.args_repr})` returned `{f.impl}`, "
-                  f"expected `{f.model}`" + (f"; violates {', '.join(f'`{s}`' for s in f.violated_specs)}" if f.violated_specs else "")]
+            if r.kind != "function":
+                L += [f"- **{f.title()}** ({f.confidence}): the code gives `{f.impl}`, the verified model `{f.model}`, after:",
+                      "", "```python", f.args_repr, "```"]
+            else:
+                L += [f"- **{f.title()}** ({f.confidence}): `{r.function.split('.')[-1]}({f.args_repr})` returned `{f.impl}`, "
+                      f"expected `{f.model}`" + (f"; violates {', '.join(f'`{s}`' for s in f.violated_specs)}" if f.violated_specs else "")]
             if f.fix and f.fix.diff:
                 status = "validated against the verified model" if f.fix.validated else "not validated"
                 L += ["", f"<details><summary>Proposed fix ({status})</summary>", "", "```diff", f.fix.diff.rstrip(), "```",

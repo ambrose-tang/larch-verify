@@ -63,6 +63,8 @@ def _ints_within(v, bound: int) -> bool:
         return -bound <= v <= bound
     if isinstance(v, (list, tuple)):
         return all(_ints_within(x, bound) for x in v)
+    if isinstance(v, dict):
+        return all(_ints_within(x, bound) for x in v.values())
     return True
 
 
@@ -157,6 +159,10 @@ class Evaluator:
             return {"kind": "harness_error", "error": resp["error"], "args": args}
         if not resp.get("pre"):
             return {"kind": "pre_false"}
+        if self.int_bound is not None and not _ints_within(resp["model"], int(self.int_bound)):
+            # The exact answer is not representable in the target runtime (e.g. a product
+            # beyond 2^53 in JavaScript): outside the domain it can be compared on.
+            return {"kind": "domain"}
         rec: dict = {
             "args": args,
             "args_repr": ", ".join(safe_repr(a) for a in args),
@@ -665,7 +671,12 @@ def main(argv: list[str]) -> int:
     sys.dont_write_bytecode = True
     h = job["harness"]
     harness = HarnessClient(h["cmd"], child_env(h["env"]), h["cwd"], timeout=float(h.get("timeout", 10.0)), stderr_path=job.get("log_path"))
-    impl = Impl(job) if job.get("impl") else None
+    if job.get("impl", {}).get("kind") == "http":
+        from larch.engine.http_impl import HttpImpl
+
+        impl = HttpImpl(job)
+    else:
+        impl = Impl(job) if job.get("impl") else None
     try:
         harness.start()
         kind = job["kind"]
@@ -681,6 +692,14 @@ def main(argv: list[str]) -> int:
             res = job_examples(job, harness, impl)
         elif kind == "witness":
             res = job_witness(job, harness)
+        elif kind == "seq":
+            from larch.engine.seqdriver import job_seq
+
+            res = job_seq(job, harness, impl)
+        elif kind == "seq_mutants":
+            from larch.engine.seqdriver import job_seq_mutants
+
+            res = job_seq_mutants(job, harness, impl, result_path)
         else:
             res = {"ok": False, "error": f"unknown job kind {kind}"}
     except LoadError as e:

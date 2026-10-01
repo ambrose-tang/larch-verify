@@ -333,6 +333,28 @@ enums) have domains small enough to enumerate in seconds, and for them "checked 
 every input" is the strongest claim available about real code. The completeness proof
 is what makes "every input" true rather than "every input we thought of".
 
+## D20. Stateful components are state machines; tests are call sequences
+
+**Decision.** A class is modelled as `State`, `init : … → Option State`, one
+`op_m : State → … → Option (State × R)` per public method (`none` = raised, state
+unchanged), and `obs_*` observers. Larch generates `Reachable` (the constructor, then any
+operation) and states invariants as `∀ s, Reachable s → inv s` and operation contracts as
+`∀ s, Reachable s → ∀ args, post s args (op s args)`. Testing replays the same call
+sequence on the model (one harness request per sequence) and on a real instance (adapter
+`new`/`invoke`/`observe`), comparing the outcome and every observer after the constructor
+and after every call. Random sequences run alongside every sequence up to depth k over
+small argument pools that the formalizer proposes; k is the largest depth that fits the
+budget.
+
+**Why.** Reachability is the honest statement: an invariant need only hold in states
+the object can actually reach, and proving it by induction over `Reachable` is the
+standard technique (the prover may strengthen it internally). Observers after every
+call catch the most common class of stateful bug, a method that partially updates its
+state and then raises, which return values alone miss. Treating "raised" as "unchanged"
+in the model makes exactly that bug a disagreement. Bounded-exhaustive sequences
+(the "small scope hypothesis") find interaction bugs that random sequences reach rarely,
+at a predictable cost.
+
 ## Eval-driven decisions
 
 The data is in [EVALS.md](EVALS.md). Each choice below won a head-to-head comparison on

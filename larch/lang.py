@@ -63,6 +63,29 @@ class FunctionInfo:
 
 
 @dataclass
+class MethodInfo:
+    name: str
+    params: list[PyParam]
+    returns: str | None
+    docstring: str | None
+    kind: str = "method"  # method | property (read-only accessor: a candidate observer)
+
+
+@dataclass
+class ComponentInfo(FunctionInfo):
+    """A class: its constructor parameters and public instance methods. `source` is the
+    whole class; `params` are the constructor's."""
+
+    methods: list[MethodInfo] = field(default_factory=list)
+
+    @property
+    def signature(self) -> str:  # type: ignore[override]
+        ps = ", ".join(p.name + (f": {p.annotation}" if p.annotation else "") for p in self.params)
+        ms = ", ".join(m.name + ("" if m.kind == "property" else "()") for m in self.methods)
+        return f"class {self.name}({ps})  [{ms}]"
+
+
+@dataclass
 class Mutant:
     id: str
     operator: str
@@ -108,6 +131,12 @@ class Language:
 
     def splice_function(self, info: FunctionInfo, new_function_source: str) -> str:
         raise NotImplementedError
+
+    def extract_class(self, path: Path, name: str) -> ComponentInfo:
+        raise ExtractError(f"{self.display} classes are not supported yet")
+
+    def generate_class_mutants(self, info: ComponentInfo, *, max_mutants: int = 40, seed: int = 0) -> list[Mutant]:
+        return []
 
     def runtime(self, info: FunctionInfo, cfg) -> Runtime:
         """Resolve the project's runtime for `info` (cfg: larch.config.Config). Raises

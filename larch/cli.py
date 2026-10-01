@@ -65,14 +65,36 @@ def cmd_verify(args, console: Console) -> int:
             configs[root].extra["fresh"] = bool(args.fresh)
             configs[root].extra["reuse"] = bool(args.reuse)
         cfg = configs[root]
+        if func.startswith("service "):
+            from .engine.service_session import verify_service
+
+            try:
+                report = verify_service(_service_subject(path, func), cfg, ui)
+            except UsageLimitError as e:
+                console.print(f"[red]✗ {e}.[/] Nothing was reported for {func}; re-run after the reset.")
+                return 3
+            ui.final(report)
+            reports.append(report)
+            fix = next((f.fix for f in report.findings if f.fix and f.fix.validated), None)
+            if fix is not None and args.apply and getattr(fix, "file", None):
+                _maybe_apply(report, Path(fix.file), console, assume_yes=args.yes)
+            continue
+        from .contracts import _looks_like_class
+
+        is_class = _looks_like_class(path, func)
         try:
-            lang.extract(path, func)
+            (lang.extract_class if is_class else lang.extract)(path, func)
         except ExtractError as e:
             console.print(f"[yellow]skipping {path.name}::{func}:[/] {e}")
             continue
         subject = _subject_for(path, func)
         try:
-            report = verify_function(path, func, cfg, ui, subject=subject)
+            if is_class:
+                from .engine.component_session import verify_component
+
+                report = verify_component(path, func, cfg, ui, subject=subject)
+            else:
+                report = verify_function(path, func, cfg, ui, subject=subject)
         except UsageLimitError as e:
             console.print(f"[red]✗ {e}.[/] Nothing was reported for {func}; re-run after the reset, "
                           "or set ANTHROPIC_API_KEY to use the API instead.")
@@ -115,6 +137,14 @@ def _subject_for(path: Path, func: str):
     return cf.for_function(path, func) if cf else None
 
 
+def _service_subject(md: Path, label: str):
+    from . import contracts as larchmd
+
+    if md not in _CONTRACT_FILES:
+        _CONTRACT_FILES[md] = larchmd.load(md)
+    return _CONTRACT_FILES[md].subject(label)
+
+
 def _plan_targets(args, console: Console) -> list[tuple[Path, str]] | None:
     """(file, function) pairs to verify. Directories expand to the functions `larch scan`
     rates as ready; files to all their public functions; --changed keeps only functions
@@ -140,8 +170,8 @@ def _plan_targets(args, console: Console) -> list[tuple[Path, str]] | None:
                 console.print(f"[red]error:[/] {e}")
                 return None
             for subj in cf.subjects:
-                if subj.kind != "function":
-                    console.print(f"[yellow]skipping {subj.label}:[/] {subj.kind}s are not supported by this version yet")
+                if subj.kind == "service":
+                    plan.append((md, subj.label))
                     continue
                 if subj.path is None or not subj.path.exists():
                     console.print(f"[red]error:[/] {md.name}:{subj.line}: {subj.target}: file not found")
@@ -150,7 +180,20 @@ def _plan_targets(args, console: Console) -> list[tuple[Path, str]] | None:
             targets = [str(md.parent)]
         else:
             targets = ["."]
-    for target in ([] if plan else targets):
+    from_md = bool(plan)
+    for target in ([] if from_md else targets):
+        if target.lower().startswith("service "):
+            md = larchmd.find(Path.cwd())
+            try:
+                subj = larchmd.load(md).subject(target) if md else None
+            except larchmd.ContractsError as e:
+                console.print(f"[red]error:[/] {e}")
+                return None
+            if subj is None or subj.kind != "service":
+                console.print(f"[red]error:[/] no `## {target}` in " + (str(md) if md else "a LARCH.md (none found)"))
+                return None
+            plan.append((md, subj.label))
+            continue
         path, funcs = _parse_target(target)
         if not path.exists():
             console.print(f"[red]error:[/] {path} does not exist")
@@ -179,7 +222,7 @@ def _plan_targets(args, console: Console) -> list[tuple[Path, str]] | None:
         root = repo_root(Path(targets[0].split("::")[0]))
         ref = args.changed or default_base_ref(root)
         try:
-            files = sorted({p for p, _ in plan})
+            files = sorted({p for p, f in plan if not f.startswith("service ")})
             cands = scan(files, include_tests=True, root=root)
             touched = {((root / c.file).resolve(), c.function) for c in changed_functions(cands, root, ref)}
         except ValueError as e:
@@ -195,6 +238,9 @@ def _plan_targets(args, console: Console) -> list[tuple[Path, str]] | None:
 
         kept = []
         for p, f in plan:
+            if f.startswith("service "):
+                kept.append((p, f))
+                continue
             try:
                 if load_approved(language_for(p).extract(p, f)) is not None:
                     kept.append((p, f))
@@ -371,7 +417,8 @@ def cmd_scan(args, console: Console) -> int:
     for c in ready:
         by_lang[c.language] = by_lang.get(c.language, 0) + 1
     langs = ", ".join(f"{n} {lang}" for lang, n in sorted(by_lang.items()))
-    console.print(f"[bold]{len(ready)} verifiable function(s)[/]" + (f" ({langs})" if langs else "")
+    n_cls = sum(1 for c in ready if c.kind == "component")
+    console.print(f"[bold]{len(ready)} verifiable target(s)[/]" + (f" ({langs}; {n_cls} classes)" if langs else "")
                   + f", {len(skipped)} skipped, under {root}")
     shown = ready if args.all else ready[: args.top]
     if shown:

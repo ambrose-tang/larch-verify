@@ -111,6 +111,12 @@ class PythonLanguage(Language):
     def splice_function(self, info: FunctionInfo, new_function_source: str) -> str:
         return _extract.splice_function(info, new_function_source)
 
+    def extract_class(self, path: Path, name: str):
+        return _extract.extract_class(path, name)
+
+    def generate_class_mutants(self, info, *, max_mutants: int = 40, seed: int = 0) -> list[Mutant]:
+        return _mutate.generate_mutants(info, max_mutants=max_mutants, seed=seed)
+
     def runtime(self, info: FunctionInfo, cfg) -> Runtime:
         try:
             env = resolve_python(info.path, cfg.python)

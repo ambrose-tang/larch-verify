@@ -16,6 +16,13 @@
   every input is run (smallest first) and the box is proved in Lean to contain every
   valid input (`input_domain`). A function whose postconditions hold on every input of
   a proved-complete domain passes even where a model proof is missing.
+- **Stateful components**: a class under a LARCH.md heading (or `larch verify
+  file::Class`) is modelled as a Lean state machine. Invariants are proved for every
+  reachable state, operation contracts for every call from every such state. The real
+  object is tested with random and bounded-exhaustive call sequences, comparing results
+  and observers after every call; failures shrink to the shortest sequence. Mutation
+  analysis and validated fixes cover classes too. Python and TypeScript/JavaScript.
+- `larch scan` lists classes as candidates (exception classes excluded).
 - `examples/shop`: a storefront backend (shipping rates, discounts, pay-in-N split in
   TypeScript) with a LARCH.md and realistic seeded bugs.
 

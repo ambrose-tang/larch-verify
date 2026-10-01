@@ -56,6 +56,7 @@ class FixProposal:
     applied: bool = False
     new_source: str = ""  # full patched module source (what was validated)
     base_sha256: str = ""  # hash of the file content the fix was validated against
+    file: str = ""  # the file the fix applies to, when it is not the verified one (services)
 
 
 @dataclass
@@ -69,6 +70,12 @@ class Finding:
     explanation: str = ""
     count: int = 1  # how many sampled inputs showed this kind of failure
     fix: FixProposal | None = None
+
+    def input_text(self, function: str, kind: str = "function") -> str:
+        """The failing input: a call `f(args)`, or for a component the call sequence."""
+        if kind in ("component", "service"):
+            return self.args_repr
+        return f"{function.split('.')[-1]}({self.args_repr})"
 
     def title(self) -> str:
         return {
@@ -108,6 +115,7 @@ class Report:
     function: str
     file: str
     language: str = "python"
+    kind: str = "function"  # function | component | service
     line: int = 0
     runtime: str = ""  # the interpreter that ran the code under test, and why it was chosen
     verdict: str = "error"  # passed | bug | partial | error
@@ -176,7 +184,7 @@ class Report:
             for f in self.findings:
                 L += [
                     f"### {f.title()} ({f.confidence})",
-                    f"- input: `{self.function}({f.args_repr})`",
+                    ("- calls:\n```\n" + f.args_repr + "\n```") if self.kind != "function" else f"- input: `{self.function}({f.args_repr})`",
                     f"- implementation: `{f.impl}`",
                     f"- verified model: `{f.model}`",
                 ]

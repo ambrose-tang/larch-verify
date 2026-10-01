@@ -21,3 +21,15 @@ Contracts for the storefront backend, checked by `larch verify` (see the Larch R
 - The instalments add up exactly to the total.
 - There are exactly `parts` instalments and none of them is negative.
 - No two instalments differ by more than one cent.
+
+## shop/ledger.py::Ledger
+- No balance is ever negative.
+- A transfer never changes the total store credit outstanding.
+- An operation that raises changes nothing.
+- Withdrawing more than an account holds fails.
+
+## web/src/cart.ts::Cart
+- No quantity is ever negative.
+- The total is the sum of quantity times unit price over all lines.
+- Removing more units than are in the cart removes the whole line.
+
