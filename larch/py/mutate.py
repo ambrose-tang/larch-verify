@@ -9,20 +9,10 @@ from __future__ import annotations
 import ast
 import copy
 import random
-from dataclasses import dataclass
 from typing import Callable
 
-from .extract import FunctionInfo, splice_function
-
-
-@dataclass
-class Mutant:
-    id: str
-    operator: str
-    description: str
-    lineno: int
-    function_source: str
-    module_source: str
+from ..lang import FunctionInfo, Mutant
+from .extract import splice_function
 
 
 _ROR = {

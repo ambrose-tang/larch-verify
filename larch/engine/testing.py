@@ -1,9 +1,9 @@
 """Stage wrappers for worker jobs: differential testing, property testing, mutants."""
 from __future__ import annotations
 
-from ..py.mutate import Mutant, generate_mutants
-from ..py.runner import WorkerError
+from ..lang import Mutant
 from ..spec import FormalSpec
+from .runner import WorkerError
 
 
 def run_drt(ctx, spec: FormalSpec, *, n: int, source: str | None = None, model_only: bool = False,
@@ -38,7 +38,7 @@ def run_props(ctx, spec: FormalSpec, *, n: int = 300) -> dict:
 
 
 def make_mutants(ctx) -> list[Mutant]:
-    return generate_mutants(ctx.info, max_mutants=ctx.cfg.mutants, seed=ctx.cfg.seed)
+    return ctx.lang.generate_mutants(ctx.info, max_mutants=ctx.cfg.mutants, seed=ctx.cfg.seed)
 
 
 def run_mutants(ctx, spec: FormalSpec, mutants: list[Mutant]) -> dict:

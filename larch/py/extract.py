@@ -2,44 +2,13 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..lang import ExtractError, FunctionInfo, PyParam
 from ..spec import lean_binder
 
 
-class ExtractError(ValueError):
-    pass
-
-
-@dataclass
-class PyParam:
-    name: str
-    annotation: str | None
-    lean_name: str
-    has_default: bool = False
-
-
-@dataclass
-class FunctionInfo:
-    path: Path
-    name: str  # "func" or "Class.method"
-    source: str
-    module_source: str
-    lineno: int  # first line of the definition, including decorators (1-based)
-    end_lineno: int
-    col_offset: int
-    params: list[PyParam]
-    returns: str | None
-    docstring: str | None
-    context: str = ""
-    warnings: list[str] = field(default_factory=list)
-
-    @property
-    def signature(self) -> str:
-        ps = ", ".join(p.name + (f": {p.annotation}" if p.annotation else "") for p in self.params)
-        ret = f" -> {self.returns}" if self.returns else ""
-        return f"def {self.name.split('.')[-1]}({ps}){ret}"
+__all__ = ["ExtractError", "FunctionInfo", "PyParam", "extract", "list_functions", "splice_function"]
 
 
 def _functions(tree: ast.Module) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:

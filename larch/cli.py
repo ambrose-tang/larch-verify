@@ -163,7 +163,23 @@ def cmd_doctor(args, console: Console) -> int:
     except Exception as e:  # noqa: BLE001
         ok = False
         console.print(f"[red]✗[/] {e}")
-    console.print(f"[green]✓[/] Python for user code: {sys.executable} (override with --python or LARCH_PYTHON)")
+    from .py.env import PythonEnvError, resolve_python
+
+    try:
+        cfg = Config.load(Path.cwd())
+        env = resolve_python(Path.cwd() / "_.py", cfg.python)
+        mark = "[yellow]![/]" if env.source == "Larch's own interpreter" else "[green]✓[/]"
+        console.print(f"{mark} Python for your code here: {env.describe()}")
+        for w in env.warnings[:1]:
+            console.print(f"    [dim]{w}[/]")
+    except PythonEnvError as e:
+        ok = False
+        console.print(f"[red]✗[/] Python: {e}")
+    import shutil
+
+    node = shutil.which("node")
+    console.print(f"[green]✓[/] Node.js for JavaScript/TypeScript: {node}" if node else
+                  "[dim]·[/] Node.js not found (needed only for JavaScript/TypeScript)")
     return 0 if ok else 3
 
 

@@ -12,15 +12,15 @@ from ..config import Config
 from ..lean.checker import Checker
 from ..lean.toolchain import find_toolchain
 from ..lean.workspace import LeanWorkspace
+from ..lang import ExtractError, RuntimeEnvError, language_for
 from ..llm.base import LLM, Ledger, UsageLimitError
 from ..llm.providers import make_provider
-from ..py.extract import extract
-from ..py.runner import PythonRunner, default_python
 from ..report import MutationSummary, ProofResult, Report, SpecResult
 from ..spec import FormalSpec
 from ..ui import UI
 from ..util import cache_root, slug
 from .context import RunContext
+from .runner import JobRunner
 from .findings import adjudicate, classify, count_kind, make_finding, propose_fix, repair_model
 from .formalize import FormalizeError, build_lean, formalize
 from .prove import finalize_proofs, prove_all
@@ -47,22 +47,44 @@ def verify_function(path: Path, func: str, cfg: Config, ui: UI | None = None, *,
     ledger = llm.ledger if llm else Ledger(cfg.budget_usd)
     ctx: RunContext | None = None
     try:
-        info = extract(path, func)
+        lang = language_for(path)
+        if lang is None:
+            raise ExtractError(f"{path.suffix or path.name}: unsupported file type")
+        info = lang.extract(path, func)
+        report.language = lang.name
+        report.line = info.lineno
+        runtime = lang.runtime(info, cfg)
+        report.runtime = runtime.describe()
+        runner = JobRunner(runtime, run_dir / "py")
         tc = find_toolchain()
         llm = llm or LLM(make_provider(cfg.provider, cache=cfg.cache), ledger)
         ws = LeanWorkspace(run_dir / "lean", tc)
-        python = cfg.python or default_python(path)
-        runner = PythonRunner(python, run_dir / "py")
-        ctx = RunContext(cfg=cfg, llm=llm, tc=tc, ws=ws, runner=runner, checker=Checker(tc), info=info, ui=ui, run_dir=run_dir)
-        ui.header(target=f"{path}::{func}", model=f"{cfg.model} via {llm.provider.describe()}", lean=tc.version, python=python)
+        ctx = RunContext(cfg=cfg, llm=llm, tc=tc, ws=ws, runner=runner, checker=Checker(tc), info=info, ui=ui,
+                         run_dir=run_dir, lang=lang)
+        ui.header(target=f"{path}::{func}", model=f"{cfg.model} via {llm.provider.describe()}", lean=tc.version,
+                  runtime=runtime.describe())
 
         with ui.step(f"Read {path.name}::{func}") as st:
+            # Load the code in the project's own runtime before spending anything on it.
+            st.update(f"loading with {runtime.display}")
+            chk = runner.check()
+            if not chk.get("ok"):
+                st.done("cannot load the code in the project's environment", status="fail")
+                raise RuntimeEnvError(lang.explain_load_error(runtime, info, chk))
             n_lines = info.end_lineno - info.lineno + 1
-            st.done(f"{info.signature}  ({n_lines} lines)")
-            for w in info.warnings:
+            st.done(f"{info.signature}  ({n_lines} lines) · {runtime.display}")
+            for w in info.warnings + runtime.warnings:
                 st.line(f"[yellow]{w}[/]")
                 report.warnings.append(w)
         _run(ctx, report, spec_override)
+    except (RuntimeEnvError, ExtractError) as e:
+        report.verdict = "error"
+        report.error = str(e)
+        report.headline = (
+            f"Could not run {path.name} in the project's environment." if isinstance(e, RuntimeEnvError)
+            else f"Cannot verify {func}."
+        )
+        (run_dir / "error.txt").write_text(str(e) + "\n")
     except FormalizeError as e:
         report.verdict = "error"
         report.error = f"{e}: " + "; ".join(p.splitlines()[0] for p in e.problems[:3])
@@ -265,9 +287,11 @@ def _run(ctx: RunContext, report: Report, spec_override: FormalSpec | None) -> N
             mt.join()
             ms = MutationSummary()
             muts = mut_result.get("mutants", [])
-            ms.total = len(muts)
             ms.inputs = int(mut_result.get("valid_inputs") or 0)
             by_id = {m.id: m for m in mutants}
+            invalid = [r for r in muts if r.get("invalid")]
+            muts = [r for r in muts if not r.get("invalid")]
+            ms.invalid = len(invalid)
             for r in muts:
                 if r.get("killed"):
                     ms.killed += 1
@@ -279,6 +303,7 @@ def _run(ctx: RunContext, report: Report, spec_override: FormalSpec | None) -> N
                     m = by_id.get(r["id"])
                     if m:
                         ms.survivors.append(m.description + (" (likely equivalent)" if r.get("likely_equivalent") else ""))
+            ms.total = len(muts)
             report.mutation = ms
             if ms.total:
                 eq = f" · {ms.likely_equivalent} likely equivalent" if ms.likely_equivalent else ""

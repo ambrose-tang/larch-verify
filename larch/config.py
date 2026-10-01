@@ -43,7 +43,9 @@ class Config:
     propose_fixes: bool = True
     run_mutation: bool = True
     run_proofs: bool = True
-    python: str | None = None
+    python: str | None = None  # interpreter for Python code under test (default: discovered)
+    pythonpath: list | str = field(default_factory=list)  # extra import roots, relative to the project root
+    node: str | None = None  # Node.js binary for JavaScript/TypeScript (default: `node` on PATH)
     artifacts: str | None = None  # directory for run artifacts (default: user cache)
 
     extra: dict = field(default_factory=dict)

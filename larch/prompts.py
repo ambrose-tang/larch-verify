@@ -7,12 +7,15 @@ from __future__ import annotations
 
 import json
 
-LEAN_ENV = """\
+_LEAN_HEAD = """\
 ## Lean environment
 Lean 4.34, core library only (no Mathlib, no Batteries). All code lives inside
 `namespace Larch`, which Larch opens for you: never write `namespace`, `end`, `import`
 or `open` for it.
 
+"""
+
+PYTHON_TYPE_GUIDE = """\
 Python-to-Lean mapping (be exact; differential tests will catch any mismatch):
 - int ↦ Int (unbounded, like Python). Use Nat only where the value is a count or an
   index that cannot be negative. Python `a // b` and `a % b` are FLOOR division:
@@ -23,6 +26,9 @@ Python-to-Lean mapping (be exact; differential tests will catch any mismatch):
   characters. Char predicates (`Char.isAlpha`, `isDigit`, `isAlphanum`, `isUpper`,
   `isWhitespace`, `toLower`, `toUpper`) are ASCII-only, unlike Python's Unicode-aware
   str methods. If that matters, restrict the input domain with the precondition.
+"""
+
+_LEAN_CORE = """\
 - Useful core API: `xs.length`, `xs[i]?`, `xs[i]!`, `xs.take n`, `xs.drop n`, `xs.reverse`,
   `xs.map f`, `xs.filter p`, `xs.foldl f init`, `xs.foldr f init`, `xs.sum`, `xs.count a`,
   `xs.contains a`, `a ∈ xs`, `xs.all p`, `xs.any p`, `xs.zip ys`, `xs.zipIdx`,
@@ -40,12 +46,19 @@ Python-to-Lean mapping (be exact; differential tests will catch any mismatch):
   find the decreasing proof. Do not write `decreasing_by` proofs.
 """
 
+
+def lean_env(type_guide: str = PYTHON_TYPE_GUIDE) -> str:
+    return _LEAN_HEAD + type_guide + _LEAN_CORE
+
+
+LEAN_ENV = lean_env()
+
 FORBIDDEN = """\
 Forbidden anywhere: sorry, admit, axiom, partial, unsafe, opaque, implemented_by, extern,
 native_decide, macro/syntax/notation/elab, #eval, import, set_option (except maxHeartbeats),
 and `instance` declarations (use `deriving` instead)."""
 
-FORMALIZE_SYSTEM = f"""\
+_FORMALIZE_SYSTEM_BODY = """\
 You are the formalization engine of Larch, a verification tool. Given a function from a
 user's codebase, you write:
   1. an executable reference MODEL of its intended behaviour in Lean 4,
@@ -112,27 +125,32 @@ values. Do not import anything. `edge_cases` is a JSON array of argument arrays,
 
 ## Example of a complete answer (for `def index_of(xs: list[int], target: int) -> Optional[int]`,
 documented as "index of the first occurrence of target in xs, or None")
-{{
+{
   "understanding": "Returns the smallest i with xs[i] == target, or None when target is absent. Empty list gives None.",
-  "params": [{{"name": "xs", "lean_type": "List Int"}}, {{"name": "target", "lean_type": "Int"}}],
+  "params": [{"name": "xs", "lean_type": "List Int"}, {"name": "target", "lean_type": "Int"}],
   "return_type": "Option Nat",
   "exceptions": false,
   "model": "def model (xs : List Int) (target : Int) : Option Nat :=\\n  match xs with\\n  | [] => none\\n  | x :: rest => if x = target then some 0 else (model rest target).map (· + 1)",
-  "precondition": {{"english": "No restriction.", "lean": "True"}},
+  "precondition": {"english": "No restriction.", "lean": "True"},
   "postconditions": [
-    {{"name": "found_is_target", "english": "If an index i is returned, xs[i] equals target.", "lean": "∀ i ∈ result, xs[i]? = some target"}},
-    {{"name": "first_occurrence", "english": "No position before the returned index holds target.", "lean": "∀ i ∈ result, ∀ j, j < i → xs[j]? ≠ some target"}},
-    {{"name": "none_iff_absent", "english": "None is returned exactly when target does not occur in xs.", "lean": "result = none ↔ target ∉ xs"}}
+    {"name": "found_is_target", "english": "If an index i is returned, xs[i] equals target.", "lean": "∀ i ∈ result, xs[i]? = some target"},
+    {"name": "first_occurrence", "english": "No position before the returned index holds target.", "lean": "∀ i ∈ result, ∀ j, j < i → xs[j]? ≠ some target"},
+    {"name": "none_iff_absent", "english": "None is returned exactly when target does not occur in xs.", "lean": "result = none ↔ target ∉ xs"}
   ],
   "properties": [],
   "input_generator": "def strategy(st):\\n    small = st.integers(-3, 3)\\n    return st.tuples(st.lists(small, max_size=8), small)",
   "edge_cases": "[[[], 1], [[1], 1], [[2, 1, 1], 1], [[1, 2], 3]]",
   "notes": ""
-}}
+}
 
-{LEAN_ENV}
-{FORBIDDEN}
 """
+
+
+def formalize_system(type_guide: str = PYTHON_TYPE_GUIDE) -> str:
+    return _FORMALIZE_SYSTEM_BODY + f"{lean_env(type_guide)}\n{FORBIDDEN}\n"
+
+
+FORMALIZE_SYSTEM = formalize_system()
 
 _PARAM = {
     "type": "object",
@@ -193,16 +211,33 @@ MODE_GUIDANCE = {
 }
 
 
-def formalize_user(info, mode: str = "hybrid", language: str = "Python") -> str:
+_LANG_NAMES = {"python": ("Python", "python"), "javascript": ("JavaScript", "js"), "typescript": ("TypeScript", "ts")}
+
+
+def _fence(info) -> str:
+    return _LANG_NAMES.get(getattr(info, "language", "python"), ("", ""))[1]
+
+
+def _intent_view(info) -> str:
+    """Signature and documentation only (the body hidden), in the function's language."""
+    if getattr(info, "language", "python") == "python":
+        return f"{info.signature}:\n    \"\"\"{info.docstring or ''}\"\"\"\n    ..."
+    doc = "\n".join(" * " + ln if ln else " *" for ln in (info.docstring or "").splitlines())
+    return f"/**\n{doc}\n */\n{info.signature} {{ ... }}"
+
+
+def formalize_user(info, mode: str = "hybrid", language: str | None = None) -> str:
+    language = language or _LANG_NAMES.get(getattr(info, "language", "python"), ("Python", ""))[0]
+    fence = _fence(info)
     params = "\n".join(
         f"- `{p.name}`" + (f": {p.annotation}" if p.annotation else "") + f"  →  Lean name `{p.lean_name}`"
         for p in info.params
     )
     if mode == "intent":
-        body = f"```python\n{info.signature}:\n    \"\"\"{info.docstring or ''}\"\"\"\n    ...\n```"
+        body = f"```{fence}\n{_intent_view(info)}\n```"
     else:
-        body = f"```python\n{info.source}\n```"
-    ctx = f"\n## Surrounding module context\n```python\n{info.context}\n```\n" if info.context.strip() else ""
+        body = f"```{fence}\n{info.source}\n```"
+    ctx = f"\n## Surrounding module context\n```{fence}\n{info.context}\n```\n" if info.context.strip() else ""
     return f"""\
 ## Task
 Formalize the {language} function `{info.name}` from `{info.path.name}`.
@@ -350,7 +385,7 @@ def adjudicate_user(info, spec, rec: dict) -> str:
     specs = "\n".join(f"- {p.name}: {p.english}" for p in spec.active_posts())
     return f"""\
 ## Function under test
-```python
+```{_fence(info)}
 {info.source}
 ```
 
@@ -387,7 +422,7 @@ MODEL_REPAIR_SCHEMA = {
 def model_repair_user(info, spec, model_text: str, issues: list[str]) -> str:
     return f"""\
 ## Function
-```python
+```{_fence(info)}
 {info.source}
 ```
 
@@ -424,7 +459,7 @@ FIX_SCHEMA = {
 }
 
 
-def fix_user(info, spec, recs: list[dict], feedback: str | None = None) -> str:
+def fix_user(info, spec, recs: list[dict], feedback: str | None = None, constraints: str = "") -> str:
     specs = "\n".join(f"- {p.name}: {p.english}" for p in spec.active_posts())
     ex = "\n".join(
         f"- `{info.name}({r.get('args_repr')})` returned {r.get('impl')}, expected {r.get('model')}"
@@ -434,7 +469,7 @@ def fix_user(info, spec, recs: list[dict], feedback: str | None = None) -> str:
     fb = f"\n## Your previous fix was rejected\n{feedback}\n" if feedback else ""
     return f"""\
 ## Function
-```python
+```{_fence(info)}
 {info.source}
 ```
 
@@ -451,7 +486,7 @@ Specs (all proved about the reference model):
 
 ## Failing inputs
 {ex}
-{fb}"""
+{("## Runtime constraints" + chr(10) + constraints + chr(10)) if constraints else ""}{fb}"""
 
 
 def dump(obj) -> str:
