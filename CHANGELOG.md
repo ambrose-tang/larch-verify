@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **LARCH.md**: the project's contracts in plain English (optional exact Lean blocks),
+  one file at the repository root. `larch verify` with no arguments checks everything
+  in it; `larch init` drafts it from the best candidates of `larch scan`. Each bullet
+  becomes a mandatory spec; the review shows the developer's words next to Larch's
+  reading of its Lean. Headings without bullets get proposed contracts, which are
+  written back once approved. Changing a bullet triggers re-formalization.
+- **Contract fidelity checks**: for each formalized contract, concrete outputs judged
+  from the English alone (one violating, one satisfying) are evaluated against the
+  Lean statement; disagreements are repaired before review.
+- **Exhaustive testing**: when the precondition bounds every input to a small box,
+  every input is run (smallest first) and the box is proved in Lean to contain every
+  valid input (`input_domain`). A function whose postconditions hold on every input of
+  a proved-complete domain passes even where a model proof is missing.
+- `examples/shop`: a storefront backend (shipping rates, discounts, pay-in-N split in
+  TypeScript) with a LARCH.md and realistic seeded bugs.
+
 ## 0.2.0
 
 ### Fixed

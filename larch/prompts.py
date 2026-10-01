@@ -538,18 +538,87 @@ must agree with every documented example.
 """
 
 
-def formalize_schema(with_examples: bool) -> dict:
-    if not with_examples:
-        return FORMALIZE_SCHEMA
+_INPUT_BOUNDS = {
+    "type": "array",
+    "description": (
+        "Only when the precondition bounds EVERY Int/Nat parameter (all other parameters being Bool or Option of "
+        "these): the inclusive range of each Int/Nat parameter, implied by the precondition. Larch proves "
+        "`pre → bounds` and then tests every input. Otherwise an empty array."
+    ),
+    "items": {
+        "type": "object",
+        "properties": {"param": {"type": "string"}, "lo": {"type": "integer"}, "hi": {"type": "integer"}},
+        "required": ["param", "lo", "hi"],
+        "additionalProperties": False,
+    },
+}
+
+_CONTRACT_CHECKS = {
+    "type": "array",
+    "description": (
+        "For every contract formalized as a postcondition: concrete cases judged from the ENGLISH alone. "
+        "At least one output that violates the contract and one that satisfies it, for inputs that satisfy the precondition."
+    ),
+    "items": {
+        "type": "object",
+        "properties": {
+            "contract": {"type": "integer"},
+            "args": {"type": "string", "description": "JSON array of arguments"},
+            "output": {"type": "string", "description": 'JSON value of a possible result, or "raises"'},
+            "expect": {"type": "string", "enum": ["violates", "satisfies"]},
+        },
+        "required": ["contract", "args", "output", "expect"],
+        "additionalProperties": False,
+    },
+}
+
+
+def formalize_schema(with_examples: bool, with_contracts: bool = False) -> dict:
     import copy
 
     sch = copy.deepcopy(FORMALIZE_SCHEMA)
-    sch["properties"]["documented_examples"] = {
-        "type": "string",
-        "description": 'JSON array of {"args": [...], "expected": value or "raises"} taken verbatim from the documentation',
-    }
-    sch["required"] = sch["required"] + ["documented_examples"]
+    sch["properties"]["input_bounds"] = _INPUT_BOUNDS
+    sch["required"] = sch["required"] + ["input_bounds"]
+    if with_examples:
+        sch["properties"]["documented_examples"] = {
+            "type": "string",
+            "description": 'JSON array of {"args": [...], "expected": value or "raises"} taken verbatim from the documentation',
+        }
+        sch["required"] = sch["required"] + ["documented_examples"]
+    if with_contracts:
+        contract_field = {"type": "integer", "description": "number of the developer's contract this formalizes, or -1"}
+        for key in ("postconditions", "properties"):
+            item = sch["properties"][key]["items"]
+            item["properties"]["contract"] = contract_field
+            item["required"] = item["required"] + ["contract"]
+        sch["properties"]["contract_checks"] = _CONTRACT_CHECKS
+        sch["required"] = sch["required"] + ["contract_checks"]
     return sch
+
+
+def contracts_section(contracts: list, extra: int = 2) -> str:
+    """User-prompt section listing the developer's contracts (LARCH.md)."""
+    lines = []
+    for i, c in enumerate(contracts):
+        lines.append(f"{i}. {c.text}")
+        if c.lean:
+            lines.append(f"   Exact Lean (use VERBATIM as the body): `{' '.join(c.lean.split())}`")
+    return f"""
+## The developer's contracts (from LARCH.md)
+These are requirements written by the developer. Formalize EACH one: as exactly one
+postcondition when it is about a single call, or as one property over `model` when it
+relates several calls (e.g. "a heavier parcel never costs less"). Set its "contract"
+field to the number below. Preserve the meaning exactly: do not weaken, strengthen or
+reinterpret it. If the wording is ambiguous, take the reading a careful reviewer would
+and explain it in "notes". In "english", restate what YOUR Lean says in plain words; the
+reviewer compares it with the original. The model must satisfy every contract that
+matches the documented intent; if a contract seems to contradict the documentation,
+still formalize it and say so in "notes".
+{chr(10).join(lines)}
+
+You may add at most {extra} postconditions of your own ("contract": -1), only if they
+catch plausible bugs the contracts above would miss. Fill "contract_checks" as described.
+"""
 
 
 def render_previous(data: dict) -> str:

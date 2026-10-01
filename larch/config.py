@@ -31,6 +31,7 @@ class Config:
     formalize_repairs: int = 3
     model_repairs: int = 2
     tests: int = 2000
+    exhaustive_limit: int = 100_000  # test every input when the proved-finite domain has at most this many
     mutants: int = 40
     mutation_tests: int = 300
     call_timeout: float = 1.0

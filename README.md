@@ -91,6 +91,8 @@ Requirements:
 ## Quick start
 
 ```bash
+larch init                                     # draft LARCH.md (your contracts) from the best candidates
+larch verify                                   # check everything in LARCH.md
 larch scan                                     # which functions in this repo can Larch verify? (ranked)
 larch verify src/pricing.py::apply_discount    # one function
 larch verify web/src/pagination.ts::pageCount  # TypeScript works the same way
@@ -103,11 +105,55 @@ larch show                                     # re-display the latest report
 
 Exit codes: `0` passed · `1` bug found · `2` some spec unproved · `3` error.
 
+## Contracts: LARCH.md
+
+One file at the repository root says what the code must do, in plain English:
+
+```markdown
+# Contracts
+
+## shop/shipping.py::shipping_cost_cents
+- The cost is always positive.
+- Express delivery always costs more than standard delivery for the same parcel and zone.
+- A heavier parcel never costs less than a lighter one to the same zone at the same speed.
+
+## web/src/payments.ts::splitPayment
+- The instalments add up exactly to the total.
+- No two instalments differ by more than one cent.
+
+## shop/pricing.py::line_total
+```
+
+- **Each bullet becomes a spec.** Larch formalizes it in Lean, and you approve it once.
+  The review shows your words next to Larch's reading of its Lean, so a mistranslation
+  is visible. Before you ever see it, each formalized contract is also checked against
+  concrete cases judged from your English alone (an output that should violate it and
+  one that should satisfy it); a formalization that disagrees is sent back for repair.
+- **Exact control when you want it:** put a ```` ```lean ```` block under a bullet and it is
+  used verbatim.
+- **A heading with no bullets** asks Larch to propose contracts. The ones you approve are
+  written back under the heading, so LARCH.md stays the record of what was agreed.
+- **Changing a bullet** makes Larch re-formalize that function on the next run.
+- `include: services/billing/LARCH.md` pulls in another file (monorepos).
+
+See [`examples/shop/LARCH.md`](examples/shop/LARCH.md) for a complete example.
+
+### Exhaustive testing
+
+When every input a function accepts fits in a small box (booleans, small enums,
+bounded integers, e.g. `1 <= weight_kg <= 30`, `1 <= zone <= 5`), Larch runs the
+implementation on **every** input instead of a random sample, smallest first. It also
+proves in Lean that the box contains every input the precondition allows, so the claim
+"checked on every valid input" is a theorem, not an assumption. On such a function a
+postcondition that held on every output holds for the code itself, not only for the
+model. Larger domains fall back to differential random testing; the limit is
+`exhaustive_limit` (default 100,000 inputs).
+
 ## Team workflow
 
-1. **Approve specs once.** `larch init` creates `.larch/`. Every spec you approve
-   interactively is stored in `.larch/specs/` as reviewable JSON. Commit it: the specs
-   are the durable asset ("what this function must do", signed off by a person).
+1. **Write and approve contracts once.** `larch init` creates `.larch/` and drafts
+   LARCH.md. Every spec you approve is stored in `.larch/specs/` as reviewable JSON.
+   Commit both: they are the durable asset ("what this code must do", signed off by a person).
 2. **Check every pull request.** In CI, `larch verify --changed --approved-only`
    re-tests every changed function that has approved specs against those specs. It
    makes no formalization calls; add `--no-proofs` to skip re-proving unchanged specs and
@@ -206,6 +252,7 @@ repository root.
 | `--provider` | `auto` | `anthropic`, `bedrock`, `vertex` or `claude-code` (see below) |
 | `--effort` | `low` | reasoning effort for formalization (`low`…`max`) |
 | `--tests N` | 2000 | generated inputs for differential testing |
+| `exhaustive_limit` (config) | 100000 | test every input when the proved-complete domain is at most this large |
 | `--mutants N` | 40 | injected bugs for mutation analysis |
 | `--budget USD` | 5 | hard cap on LLM spend per function |
 | `--python PATH` | discovered | interpreter (or virtualenv) for Python code |

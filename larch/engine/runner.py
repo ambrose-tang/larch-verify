@@ -80,7 +80,7 @@ class JobRunner:
         result_path = self.workdir / f"job{n:03d}_{job['kind']}.result.json"
         job = dict(job)
         job.setdefault("log_path", str(self.workdir / f"job{n:03d}_{job['kind']}.log"))
-        if job["kind"] != "props":
+        if job["kind"] not in ("props", "witness"):
             job.setdefault("impl", self.impl_spec())
         if self.runtime.int_bound is not None:
             job.setdefault("int_bound", self.runtime.int_bound)

@@ -1,0 +1,9 @@
+[project]
+name = "shop"
+version = "0.1.0"
+description = "Example storefront backend used to demonstrate Larch (pricing, shipping, payments, ledger, orders API)."
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.larch]
+budget_usd = 3.0

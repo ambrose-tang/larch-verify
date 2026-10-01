@@ -48,6 +48,39 @@ def run_mutants(ctx, spec: FormalSpec, mutants: list[Mutant]) -> dict:
     return ctx.runner.run_mutants(job, timeout_per_mutant=30.0)
 
 
+def run_witnesses(ctx, spec: FormalSpec, checks: list[dict]) -> list[dict]:
+    """Evaluate postconditions on (input, output) pairs judged from a contract's English."""
+    job = ctx.job_base(spec)
+    job.update(kind="witness", witnesses=[{"post": c["post"], "args": c["args"], "output": c["output"]} for c in checks])
+    try:
+        res = ctx.runner.run(job, timeout=300).get("witnesses", [])
+    except WorkerError:
+        return []
+    return [{**r, **c} for c, r in zip(checks, res)]
+
+
+def exhaustive_size(ctx, spec: FormalSpec) -> int | None:
+    from ..lean.types import domain_size, parse_type
+
+    types = [parse_type(p.lean_type) for p in spec.params]
+    size = domain_size(types, [spec.input_bounds.get(p.name) for p in spec.params])
+    if size is None or (spec.input_bounds and not any(q.name == "input_domain" for q in spec.active_props())):
+        return None
+    return size
+
+
+def run_exhaustive(ctx, spec: FormalSpec, *, vacuity: bool = True) -> dict:
+    """Run the implementation on EVERY input in the (proved-complete) domain."""
+    job = ctx.job_base(spec)
+    job.update(kind="drt", exhaustive=True, bounds=[spec.input_bounds.get(p.name) for p in spec.params],
+               exhaustive_limit=ctx.cfg.exhaustive_limit, shrink=False, vacuity=vacuity,
+               time_budget=max(600.0, ctx.cfg.exhaustive_limit * 0.01))
+    try:
+        return ctx.runner.run(job, timeout=max(900.0, ctx.cfg.exhaustive_limit * 0.02))
+    except WorkerError as e:
+        return {"ok": False, "error": str(e)}
+
+
 def run_examples(ctx, spec: FormalSpec, *, model_only: bool = False) -> list[dict]:
     if not spec.examples:
         return []

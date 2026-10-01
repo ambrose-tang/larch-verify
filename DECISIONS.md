@@ -297,6 +297,42 @@ own targets, stay within a budget, and report in the places reviewers already lo
 Purity and type checks are heuristics on the code (not the docs), so they err toward
 skipping; an explicit `FILE::function` always overrides them.
 
+## D18. Contracts live in one plain-English file: LARCH.md
+
+**Decision.** Developers state what code must do in `LARCH.md` at the repository root:
+`## path::name` headings with English bullets, optional ```` ```lean ```` blocks for exact
+statements, `include:` for monorepos. Each bullet becomes a mandatory spec (the
+formalizer must cover every one; it may add at most two of its own, labelled as such).
+The review shows the developer's words beside Larch's English reading of the Lean it
+wrote. Before review, each contract's Lean is evaluated on concrete outputs that the
+formalizer judged from the English alone; a disagreement is a repair round. Approved
+specs remember the bullets they were made from, so editing a bullet re-formalizes.
+Empty headings get proposed contracts, written back on interactive approval.
+
+**Why.** The riskiest step in the pipeline is the LLM deciding what the code is meant to
+do. A developer-written contract removes that guess, but adds a new risk: a
+mistranslated contract. Back-translation makes the meaning reviewable, and the
+witness check catches the common failures (an inequality the wrong way round, a bound
+off by one) mechanically. English keeps the file readable by everyone who reviews a
+pull request; Lean blocks are there for the few contracts that need exactness.
+
+## D19. Exhaustive testing with a proved-complete domain
+
+**Decision.** The formalizer reports integer ranges when the precondition bounds every
+input. Larch adds a property `input_domain : pre → each parameter in its range`, proves
+it like any spec, and, when the box holds at most `exhaustive_limit` inputs, runs every
+one (smallest magnitude first, so the first failure is a minimal counterexample)
+instead of random testing. With the domain proved complete, a postcondition evaluated
+on the implementation's output for every input holds for the code itself; such a
+function passes even if a postcondition's proof about the model is missing. Properties
+(relations between calls) still need their proofs.
+
+**Why.** Random testing finds bugs that fire on a few percent of inputs; it can miss a
+single bad input. Many business functions (rates by zone and weight, flags, small
+enums) have domains small enough to enumerate in seconds, and for them "checked on
+every input" is the strongest claim available about real code. The completeness proof
+is what makes "every input" true rather than "every input we thought of".
+
 ## Eval-driven decisions
 
 The data is in [EVALS.md](EVALS.md). Each choice below won a head-to-head comparison on

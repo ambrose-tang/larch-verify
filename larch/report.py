@@ -30,6 +30,8 @@ class SpecResult:
     vacuity_tried: int = 0
     vacuity_rejected: int = 0
     impl_violations: int = 0
+    origin: str = "llm"  # llm | contract (LARCH.md) | larch (e.g. input_domain)
+    contract: str = ""  # the developer's words, for origin == "contract"
 
     @property
     def possibly_vacuous(self) -> bool:
@@ -72,6 +74,7 @@ class Finding:
         return {
             "spec_violation": "Implementation violates an approved spec",
             "divergence": "Implementation disagrees with the verified model",
+            "value": "Implementation disagrees with the verified model",
             "crash": "Implementation raises an exception on a valid input",
             "timeout": "Implementation does not terminate on a valid input",
             "type": "Implementation returns a value of the wrong type",
@@ -185,7 +188,9 @@ class Report:
                     L += ["", "Proposed fix" + (" (validated against the model)" if f.fix.validated else " (NOT validated)") + ":", "```diff", f.fix.diff, "```"]
                 L.append("")
         if self.drt:
-            L += ["## Differential testing", f"{self.drt.get('valid', 0)} valid inputs, {self.drt.get('disagreements', 0)} disagreements.", ""]
+            how = ("Exhaustive: every valid input (domain proved complete)" if self.drt.get("complete")
+                   else "Exhaustive over the stated ranges" if self.drt.get("exhaustive") else "Differential testing")
+            L += ["## Testing", f"{how}: {self.drt.get('valid', 0)} valid inputs, {self.drt.get('disagreements', 0)} disagreements.", ""]
         if self.mutation:
             m = self.mutation
             L += ["## Mutation analysis", f"{m.killed}/{m.total} mutants detected ({m.score:.0%}); {m.killed_by_specs} by the specs alone."]

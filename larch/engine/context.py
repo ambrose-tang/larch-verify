@@ -30,6 +30,8 @@ class RunContext:
     ui: UI
     run_dir: Path
     lang: Language | None = None
+    contracts: list = field(default_factory=list)  # larch.contracts.Contract from LARCH.md
+    subject: object = None  # larch.contracts.Subject, when the target is declared in LARCH.md
     stage_seconds: dict = field(default_factory=dict)
     _n: itertools.count = field(default_factory=lambda: itertools.count(1))
     _lock: threading.Lock = field(default_factory=threading.Lock)
