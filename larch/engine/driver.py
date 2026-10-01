@@ -194,7 +194,8 @@ class Evaluator:
 def build_strategy(job: dict, param_types, *, which: str | None = None):
     from hypothesis import strategies as st
 
-    typed = st.tuples(*[strategy_for(t) for t in param_types]) if param_types else st.just(())
+    bound = job.get("int_bound")
+    typed = st.tuples(*[strategy_for(t, int_bound=bound) for t in param_types]) if param_types else st.just(())
     sconf = job.get("strategy") or {}
     mode = which or sconf.get("mode", "typed")
     note = None

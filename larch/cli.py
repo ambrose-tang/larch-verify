@@ -24,8 +24,8 @@ def _parse_target(t: str) -> tuple[Path, list[str]]:
 
 def cmd_verify(args, console: Console) -> int:
     from .engine.session import verify_function
+    from .lang import ExtractError, language_for, supported_extensions
     from .llm.base import UsageLimitError
-    from .py.extract import ExtractError, extract, list_functions
     from .ui import RichUI, UI
 
     overrides = dict(
@@ -33,7 +33,7 @@ def cmd_verify(args, console: Console) -> int:
         tests=args.tests, mutants=args.mutants, budget_usd=args.budget, python=args.python,
         artifacts=args.artifacts, formalize_mode=args.formalize_mode, proof_strategy=args.proof_strategy,
         test_strategy=args.test_strategy, seed=args.seed, proof_attempts=args.proof_attempts,
-        prover_efforts=args.prover_efforts, doc_examples=args.doc_examples,
+        prover_efforts=args.prover_efforts, doc_examples=args.doc_examples, node=args.node,
     )
     if args.yes:
         overrides["auto_approve"] = True
@@ -50,13 +50,14 @@ def cmd_verify(args, console: Console) -> int:
         if not path.exists():
             console.print(f"[red]error:[/] {path} does not exist")
             return 3
-        if path.suffix != ".py":
-            console.print(f"[red]error:[/] {path}: only Python files are supported in this version")
+        lang = language_for(path)
+        if lang is None:
+            console.print(f"[red]error:[/] {path}: unsupported file type (supported: {', '.join(supported_extensions())})")
             return 3
         if not funcs:
             try:
-                funcs = list_functions(path)
-            except SyntaxError as e:
+                funcs = lang.list_functions(path)
+            except (SyntaxError, ExtractError) as e:
                 console.print(f"[red]error:[/] cannot parse {path}: {e}")
                 return 3
             if args.k:
@@ -69,7 +70,7 @@ def cmd_verify(args, console: Console) -> int:
         cfg.extra["reuse"] = bool(args.reuse)
         for func in funcs:
             try:
-                extract(path, func)
+                lang.extract(path, func)
             except ExtractError as e:
                 console.print(f"[yellow]skipping {path.name}::{func}:[/] {e}")
                 continue
@@ -217,10 +218,18 @@ def cmd_show(args, console: Console) -> int:
 
 
 def cmd_list(args, console: Console) -> int:
-    from .py.extract import list_functions
+    from .lang import ExtractError, language_for
 
-    for f in list_functions(Path(args.file)):
-        console.print(f"{args.file}::{f}")
+    lang = language_for(args.file)
+    if lang is None:
+        console.print(f"[red]error:[/] {args.file}: unsupported file type")
+        return 3
+    try:
+        for f in lang.list_functions(Path(args.file)):
+            console.print(f"{args.file}::{f}")
+    except (SyntaxError, ExtractError) as e:
+        console.print(f"[red]error:[/] {e}")
+        return 3
     return 0
 
 
@@ -248,7 +257,9 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--no-mutation", action="store_true")
     v.add_argument("--no-fix", action="store_true")
     v.add_argument("--budget", type=float, help="max LLM spend in USD per function (default 5)")
-    v.add_argument("--python", help="interpreter used to run your code (default: project .venv or current)")
+    v.add_argument("--python", help="Python interpreter or virtualenv for your code (default: discovered: project venv, "
+                   "$VIRTUAL_ENV, conda, poetry/pipenv/pdm/hatch, PATH)")
+    v.add_argument("--node", help="Node.js binary for JavaScript/TypeScript (default: `node` on PATH)")
     v.add_argument("--artifacts", help="directory for run artifacts (default ~/.cache/larch/runs)")
     v.add_argument("--formalize-mode", choices=["auto", "hybrid", "intent", "transliterate"])
     v.add_argument("--proof-strategy", choices=["portfolio", "llm", "portfolio+llm", "portfolio+sketch"])

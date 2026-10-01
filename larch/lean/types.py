@@ -209,21 +209,26 @@ _INT_BOUNDARIES = sorted({
 } | {0, 1, -1})
 
 
-def strategy_for(t: LType, *, max_len: int = 10):
+def strategy_for(t: LType, *, max_len: int = 10, int_bound: int | None = None):
+    """Type-directed inputs. `int_bound` limits integer magnitude for runtimes whose
+    numbers are not arbitrary-precision (JavaScript `number`: 2^53 - 1)."""
     from hypothesis import strategies as st
 
     h = t.head
+    big = 2**64 if int_bound is None else int_bound
+    bounds = _INT_BOUNDARIES if int_bound is None else sorted(
+        {b for b in _INT_BOUNDARIES if abs(b) <= int_bound} | {int_bound, -int_bound, int_bound - 1, 1 - int_bound})
     if h == "Int":
         return st.one_of(
             st.integers(-12, 12),
             st.integers(-1000, 1000),
-            st.integers(-(2**64), 2**64),
-            st.sampled_from(_INT_BOUNDARIES),
+            st.integers(-big, big),
+            st.sampled_from(bounds),
         )
     if h == "Nat":
         return st.one_of(
-            st.integers(0, 12), st.integers(0, 1000), st.integers(0, 2**64),
-            st.sampled_from([b for b in _INT_BOUNDARIES if b >= 0]),
+            st.integers(0, 12), st.integers(0, 1000), st.integers(0, big),
+            st.sampled_from([b for b in bounds if b >= 0]),
         )
     if h == "Bool":
         return st.booleans()
@@ -240,11 +245,11 @@ def strategy_for(t: LType, *, max_len: int = 10):
     if h == "Unit":
         return st.just(None)
     if h in ("List", "Array"):
-        return st.lists(strategy_for(t.args[0], max_len=max(2, max_len // 2)), max_size=max_len)
+        return st.lists(strategy_for(t.args[0], max_len=max(2, max_len // 2), int_bound=int_bound), max_size=max_len)
     if h == "Option":
-        return st.one_of(st.none(), strategy_for(t.args[0], max_len=max_len))
+        return st.one_of(st.none(), strategy_for(t.args[0], max_len=max_len, int_bound=int_bound))
     if h == "Prod":
-        return st.tuples(*[strategy_for(c, max_len=max_len) for c in t.prod_components()])
+        return st.tuples(*[strategy_for(c, max_len=max_len, int_bound=int_bound) for c in t.prod_components()])
     raise LeanTypeError(h)
 
 

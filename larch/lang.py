@@ -130,13 +130,9 @@ def _registry() -> list[Language]:
     if not _REGISTRY:
         from .py.backend import PYTHON
 
-        _REGISTRY.append(PYTHON)
-        try:
-            from .js.backend import JS, TS
-        except ImportError:  # TEMP until the JS backend lands
-            pass
-        else:
-            _REGISTRY.extend([TS, JS])
+        from .js.backend import JS, TS
+
+        _REGISTRY.extend([PYTHON, TS, JS])
     return _REGISTRY
 
 
