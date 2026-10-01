@@ -1,17 +1,19 @@
 # Larch
 
-**Verification-guided development for everyday code.** Larch is a terminal agent that
-takes a function from your codebase, writes an executable **Lean 4 model** of what it
-is supposed to do, **proves** the key properties of that model, and then
-**differentially tests** your real implementation against the proven model on
-thousands of random inputs. It is the approach AWS used to build
-[Cedar](https://www.cedarpolicy.com/) (a verified model plus differential random
-testing), packaged so it works on a single Python function in about a minute.
+**Verification-guided development for everyday code.** Larch takes a function from
+your codebase, writes an executable **Lean 4 model** of what it is supposed to do,
+**proves** the key properties of that model, and then **differentially tests** your real
+implementation against the proven model on thousands of generated inputs. It is the
+approach AWS used to build [Cedar](https://www.cedarpolicy.com/) (a verified model plus
+differential random testing), packaged so it works on a single function in about a
+minute, and on every pull request in CI.
+
+Works with **Python**, **TypeScript** and **JavaScript**.
 
 ```text
 $ larch verify examples/calendar_utils.py::is_leap_year
 
-● Read calendar_utils.py::is_leap_year  def is_leap_year(year: int) -> bool  (7 lines)
+● Read calendar_utils.py::is_leap_year  def is_leap_year(year: int) -> bool  (7 lines) · Python 3.12.3
 
 ● Formalize: write Lean model and specs  4 postconditions, 0 properties  21.5s
   ⎿  model compiles · tested on 834 inputs, no spec violations by the model
@@ -66,7 +68,7 @@ works in between, the way Cedar's authors did:
    you false confidence.
 
 It is honest about what is proved. The report says *specs proved about the model* and
-*implementation agrees with the model on N inputs*. It never claims your Python was
+*implementation agrees with the model on N inputs*. It never claims your code was
 proven correct.
 
 ## Install
@@ -76,70 +78,178 @@ uv tool install larch-verify        # or: pipx install larch-verify
 larch doctor --install              # installs the pinned Lean toolchain via elan, builds the proof checker
 ```
 
-Requirements: Python ≥ 3.11, [elan](https://github.com/leanprover/elan) (the Lean
-installer), and either an `ANTHROPIC_API_KEY` or a logged-in
-[Claude Code](https://claude.com/claude-code). Larch can use your Claude subscription
-through the `claude` CLI, so no API key is needed.
+Requirements:
+- Python ≥ 3.11 for Larch itself (your project's code can run on Python 3.7+; Larch
+  never installs anything into your project's environment).
+- [elan](https://github.com/leanprover/elan), the Lean installer.
+- For TypeScript: Node.js ≥ 22.6. For JavaScript: Node.js ≥ 20.6.
+- An LLM: `ANTHROPIC_API_KEY`, Amazon Bedrock, Google Vertex AI, or a logged-in
+  [Claude Code](https://claude.com/claude-code) (uses your Claude subscription; no key needed).
 
-## Usage
+`larch doctor` checks all of these and tells you which interpreter will run your code.
+
+## Quick start
 
 ```bash
-larch verify path/to/module.py::function     # one function
-larch verify path/to/module.py               # every public function in the file
-larch verify module.py -k parse              # functions whose name contains "parse"
-larch verify module.py::f --apply            # offer to apply a validated fix (asks first)
-larch verify module.py::f --yes --json out.json   # CI: accept specs unreviewed, machine-readable output
-larch show                                   # re-display the latest report
-larch init                                   # keep approved specs in .larch/specs (commit them!)
+larch scan                                     # which functions in this repo can Larch verify? (ranked)
+larch verify src/pricing.py::apply_discount    # one function
+larch verify web/src/pagination.ts::pageCount  # TypeScript works the same way
+larch verify src/pricing.py                    # every public function in a file
+larch verify src/ --limit 10                   # the 10 best candidates in a directory
+larch verify --changed origin/main             # functions this branch changed
+larch verify src/pricing.py::f --apply         # offer to apply a validated fix (asks first)
+larch show                                     # re-display the latest report
 ```
 
 Exit codes: `0` passed · `1` bug found · `2` some spec unproved · `3` error.
 
-### In CI
+## Team workflow
 
-Run `larch init` and approve the specs locally once. The specs are written to
-`.larch/specs/` for you to review and commit. In CI:
+1. **Approve specs once.** `larch init` creates `.larch/`. Every spec you approve
+   interactively is stored in `.larch/specs/` as reviewable JSON. Commit it: the specs
+   are the durable asset ("what this function must do", signed off by a person).
+2. **Check every pull request.** In CI, `larch verify --changed --approved-only`
+   re-tests every changed function that has approved specs against those specs. It
+   makes no formalization calls; add `--no-proofs` to skip re-proving unchanged specs and
+   only differentially test the new code (the verdict is then `partial`, exit 2, unless a
+   bug is found).
+3. **Grow coverage.** `larch scan` ranks the rest of the codebase by how much
+   verification will pay off (documented, typed, branchy, pure); work down the list.
 
-```bash
-larch verify src/pricing.py --reuse --no-fix --json larch.json
+### GitHub Actions
+
+```yaml
+# .github/workflows/larch.yml
+name: Larch
+on: pull_request
+permissions:
+  contents: read
+  security-events: write   # for code-scanning annotations
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      # Set up the project as your tests do, so Larch runs your code with your dependencies:
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -e .
+      - uses: ambrose-tang/larch-verify@v0.2
+        with:
+          approval: approved      # or `auto` to also formalize new functions (unreviewed specs)
+          limit: 10
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
-Reusing approved specs makes CI deterministic, and it is a regression check: when
-someone changes the implementation, it is re-tested against the specs your team
-approved.
+Findings appear as code-scanning annotations on the diff (SARIF), a summary on the job
+page, and a JUnit report (`larch-junit.xml`). See [`action.yml`](action.yml) for all
+inputs (`fail-on`, `budget`, `provider`, ...).
 
-### Useful options
+### Any other CI
+
+```bash
+larch verify --changed "$BASE_SHA" --approved-only --no-fix \
+  --sarif larch.sarif --junit larch-junit.xml --markdown summary.md --json larch.json
+```
+
+`--markdown` writes a summary suitable for a merge-request comment; `--junit` is read by
+GitLab, Jenkins, Azure DevOps, Buildkite and CircleCI test reports.
+
+## How your code is run
+
+Larch runs **your function in your project's own runtime**, so its imports resolve the
+way they do in your tests. Input generation, the Lean model and shrinking run in Larch's
+own process; a tiny adapter (standard library / Node built-ins only) loads and calls your
+function on each input. Nothing is added to your project's import path or environment.
+
+**Python interpreter**, first match wins:
+
+| | |
+|---|---|
+| explicit | `--python PATH` (an interpreter or a virtualenv directory), `LARCH_PYTHON`, or `python = "..."` in `[tool.larch]` |
+| in-project virtualenv | `.venv`, `venv`, `.env`, `env` from the file's directory up to the repository root (so a monorepo-root `.venv` is found), or `$UV_PROJECT_ENVIRONMENT` |
+| active environment | `$VIRTUAL_ENV`, then `$CONDA_PREFIX` |
+| environment manager | poetry, pipenv, pdm or hatch, when the project uses it |
+| PATH | `python3`, then `python` |
+| fallback | Larch's own interpreter, with a warning |
+
+**Imports**: the package root, the file's directory, `pythonpath` from `[tool.larch]` and
+from pytest's configuration, the project root, `src/`, and the repository root are
+importable; implicit namespace packages work; your `PYTHONPATH` is kept.
+
+**Node.js**: `--node PATH`, `LARCH_NODE`, or `node` on PATH (a version manager's shim
+picks the project's pinned version). ESM and CommonJS are supported; TypeScript runs
+through Node's built-in type stripping; non-exported functions can be verified.
+
+**Before any LLM call**, Larch loads the module. If that fails it stops and says why:
+
+```text
+✗ mod.py imports `requests`, which is not installed for Python 3.11.9 at /usr/bin/python3
+  (chosen: `python3` on PATH).
+  It is importable with /work/app/.venv-ci/bin/python (active virtualenv $VIRTUAL_ENV): re-run with
+  `--python /work/app/.venv-ci/bin/python`.
+```
+
+## Configuration
+
+Set options on the command line, in `[tool.larch]` in `pyproject.toml`, in
+`.larch.toml` (any language), in `~/.config/larch/config.toml`, or as `LARCH_*`
+environment variables. Project files are found at or above the verified file, up to the
+repository root.
 
 | option | default | meaning |
 |---|---|---|
 | `--model` | `claude-sonnet-5` | LLM used for formalization, adjudication and fixes |
 | `--prover-model` | same as `--model` | LLM used for proofs |
+| `--provider` | `auto` | `anthropic`, `bedrock`, `vertex` or `claude-code` (see below) |
 | `--effort` | `low` | reasoning effort for formalization (`low`…`max`) |
-| `--tests N` | 2000 | random inputs for differential testing |
+| `--tests N` | 2000 | generated inputs for differential testing |
 | `--mutants N` | 40 | injected bugs for mutation analysis |
 | `--budget USD` | 5 | hard cap on LLM spend per function |
-| `--python PATH` | project `.venv` | interpreter used to run your code |
-| `--formalize-mode` | `auto` | `auto` (intent when documented, else hybrid) \| `intent` \| `hybrid` \| `transliterate` (see EVALS.md) |
+| `--python PATH` | discovered | interpreter (or virtualenv) for Python code |
+| `pythonpath` (config) | `[]` | extra import roots, relative to the project root |
+| `--node PATH` | `node` on PATH | Node.js for JavaScript/TypeScript |
+| `--formalize-mode` | `auto` | `auto` (intent when documented, else hybrid) \| `intent` \| `hybrid` \| `transliterate` |
 | `--proof-strategy` | `portfolio+llm` | `llm` \| `portfolio+llm` \| `portfolio+sketch` |
 | `--test-strategy` | `mixed` | `typed` \| `llm` \| `mixed` input generation |
 
-Defaults can also be set in `[tool.larch]` in `pyproject.toml`, in `.larch.toml`, in
-`~/.config/larch/config.toml`, or with `LARCH_*` environment variables.
+```toml
+# .larch.toml
+model = "claude-sonnet-5"
+budget_usd = 2.0
+python = ".venv-ci"        # an interpreter or virtualenv, relative to the project root
+pythonpath = ["libs"]
+```
+
+### LLM providers
+
+| provider | how it is selected | credentials |
+|---|---|---|
+| Anthropic API | `--provider anthropic`, or `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` set | API key, `ant auth login`, or workload identity federation; `ANTHROPIC_BASE_URL` for gateways |
+| Amazon Bedrock | `--provider bedrock`, or `CLAUDE_CODE_USE_BEDROCK=1` | standard AWS credentials; `AWS_REGION`. `pip install 'larch-verify[bedrock]'` |
+| Google Vertex AI | `--provider vertex`, or `CLAUDE_CODE_USE_VERTEX=1` | Application Default Credentials; `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`. `pip install 'larch-verify[vertex]'` |
+| Claude Code | `--provider claude-code`, or the `claude` CLI is installed | your Claude Code login |
+
+What is sent to the provider, and what runs locally, is described in [SECURITY.md](SECURITY.md).
+Every prompt and response is kept under `~/.cache/larch/runs/<run>/llm/` for audit.
 
 ## What gets reported
 
 - **Specs:** each one proved or unproved, with the method (`auto: grind`,
   `llm (2 attempts)`, `sketch (3 lemmas)`), and a warning if a spec looks vacuous.
 - **Findings,** ranked by evidence:
-  - *confirmed*: your implementation's output violates a spec you approved, or it hangs;
+  - *confirmed*: your implementation's output violates a spec you approved, contradicts
+    a documented example, or it hangs;
   - *likely*: it disagrees with the proved model, and an adjudicator attributes the
     disagreement to the implementation;
   - *possible*: a disagreement the documentation does not settle.
   - When the *model* turns out to be wrong, Larch repairs the model, which must still
     satisfy your approved specs, instead of blaming your code.
-- **Fixes:** a minimal diff, validated by re-running differential tests against the
-  proved model, saved as a `.patch`. Your files are never modified unless you pass
-  `--apply` and confirm.
+- **Fixes:** a minimal diff, validated by loading it in your runtime and re-running
+  differential tests against the proved model, saved as a `.patch`. Your files are never
+  modified unless you pass `--apply` and confirm.
 - **Artifacts** (under `~/.cache/larch/runs/<run>/`): the Lean model, proofs, the
   full LLM transcript, `report.md`, and `report.json`.
 
@@ -154,23 +264,24 @@ the compiled Lean environment rather than parsing text, confirms three things:
 
 The model file cannot use `implemented_by`, `extern`, `partial`, `unsafe` or custom
 instances, so the model that is tested is the model that is proved. Your code runs in a
-sandboxed subprocess with timeouts, and Larch writes nothing into your repository.
+separate process with per-call timeouts (not a security sandbox: it has your
+permissions, like your tests), and Larch writes nothing into your repository.
 
-## Scope (v0.1)
+## Scope
 
-- **Language:** Python.
-- **Functions:** module-level functions and static methods over `int`, `bool`, `str`,
-  single characters, lists, tuples and `Optional`, including functions that raise
-  documented exceptions.
-- **Not yet supported:** floats, dicts, sets, objects and methods with state, I/O, async,
-  generators.
+| | Python | TypeScript / JavaScript |
+|---|---|---|
+| functions | module-level functions, `@staticmethod`s | top-level `function`s, `const f = (…) =>`, static methods (exported or not) |
+| values | `int`, `bool`, `str`, single characters, lists, tuples, `Optional` | integer `number`s (within ±2^53−1), `bigint`, `boolean`, `string`, arrays, tuples, `null`/`undefined`/optional |
+| errors | documented exceptions | documented `throw`s |
+| not yet | floats, dicts, sets, objects and methods with state, I/O, async, generators, `*args` | non-integer numbers, objects/`Map`/`Date`, `this`, async, generators, rest/destructured parameters |
 
-Larch refuses these up front with a clear message rather than giving an unreliable
-answer.
+Larch refuses these up front (and `larch scan` says why) rather than giving an
+unreliable answer. Linux and macOS are supported; Windows is not yet (use WSL).
 
 ## How well does it work?
 
-On a benchmark of 24 real-world functions, each with 2 seeded bugs ([EVALS.md](EVALS.md)):
+On a benchmark of 24 real-world Python functions, each with 2 seeded bugs ([EVALS.md](EVALS.md)):
 
 | | |
 |---|---|
@@ -183,14 +294,34 @@ On a benchmark of 24 real-world functions, each with 2 seeded bugs ([EVALS.md](E
 
 The comparisons that chose these defaults cover formalization prompting,
 proof decomposition, test generation, model choice and effort, and are in EVALS.md. The
-reasoning behind each design decision is in [DECISIONS.md](DECISIONS.md).
+reasoning behind each design decision is in [DECISIONS.md](DECISIONS.md). The
+TypeScript/JavaScript backend reuses the same pipeline and prompts with a
+language-specific type mapping; it is covered by integration tests but not yet by
+the benchmark.
+
+## Troubleshooting
+
+| symptom | cause and fix |
+|---|---|
+| `imports X, which is not installed for …` | Larch picked an interpreter without your dependencies. Pass `--python` (or set `python` in config) to the one your tests use; the message names one that works when it can find it. |
+| `imports X, which is in your repository … but not on the import path` | Add the directory to `pythonpath` in `[tool.larch]`. |
+| `… through a path alias` (TypeScript) | Node cannot resolve tsconfig `paths`; verify functions whose imports are relative or installed packages. |
+| `TypeScript needs Node.js >= 22.6` | Install a newer Node or pass `--node`. |
+| `Lean toolchain … is not installed` | `larch doctor --install`. |
+| a function is listed as skipped by `larch scan` | the reason is shown with `larch scan --all`; `larch verify FILE::function` still tries it. |
 
 ## Development
 
 ```bash
 uv venv && uv pip install -e ".[dev]"
-pytest                                  # unit tests + integration tests (real Lean, scripted LLM)
+pytest                                  # unit tests, adapter tests (real Python/Node), integration (real Lean, scripted LLM)
 python -m bench.validate                # check the benchmark's ground truth
 python -m bench.run --name my-exp ...   # run an experiment (see bench/run.py)
 python -m bench.analyze my-exp --detail
 ```
+
+Architecture in brief: `larch/engine/` is the language-neutral pipeline (formalize,
+prove, test, adjudicate, fix) and the test driver; `larch/lean/` the Lean toolchain,
+harness and checker; `larch/py/` and `larch/js/` the language backends (extraction,
+mutation, runtime discovery, adapter); `larch/repo.py` repository scanning and change
+detection; `larch/outputs.py` SARIF/JUnit/Markdown. See [DECISIONS.md](DECISIONS.md).

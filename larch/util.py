@@ -34,6 +34,29 @@ def cache_root() -> Path:
     return (Path(xdg) if xdg else Path.home() / ".cache") / "larch"
 
 
+PROJECT_MARKERS = (".larch", "pyproject.toml", "setup.py", "setup.cfg", "package.json", "tsconfig.json", ".git")
+
+
+def project_root(path: str | Path) -> Path:
+    """Nearest directory at or above `path` that looks like a project root."""
+    p = Path(path).resolve()
+    d = p if p.is_dir() else p.parent
+    for cand in [d, *d.parents]:
+        if any((cand / m).exists() for m in PROJECT_MARKERS):
+            return cand
+    return d
+
+
+def repo_root(path: str | Path) -> Path:
+    """The enclosing version-control checkout, else the project root."""
+    p = Path(path).resolve()
+    d = p if p.is_dir() else p.parent
+    for cand in [d, *d.parents]:
+        if (cand / ".git").exists():
+            return cand
+    return project_root(p)
+
+
 def slug(text: str, maxlen: int = 40) -> str:
     s = re.sub(r"[^A-Za-z0-9_]+", "_", text).strip("_")
     return (s or "x")[:maxlen]

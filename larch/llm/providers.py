@@ -36,21 +36,57 @@ def _parse_json_text(text: str):
 
 
 class AnthropicProvider(Provider):
-    """Direct Messages API (ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / ant profile)."""
+    """Messages API: Anthropic directly (ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / `ant`
+    profile / workload identity federation), Amazon Bedrock, or Google Vertex AI.
+    ANTHROPIC_BASE_URL is honoured for corporate gateways."""
 
     name = "anthropic"
 
-    def __init__(self) -> None:
+    def __init__(self, platform: str = "anthropic") -> None:
         import anthropic
 
         self._anthropic = anthropic
-        self.client = anthropic.Anthropic(max_retries=4)
+        self.platform = platform
+        self.name = platform
+        if platform == "bedrock":
+            region = os.environ.get("LARCH_AWS_REGION") or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+            if not region:
+                raise LLMError("Amazon Bedrock needs a region: set AWS_REGION (or LARCH_AWS_REGION)")
+            cls = getattr(anthropic, "AnthropicBedrockMantle", None)
+            try:
+                self.client = cls(aws_region=region, max_retries=4) if cls else anthropic.AnthropicBedrock(aws_region=region, max_retries=4)
+            except Exception as e:  # noqa: BLE001 - missing extras or credentials
+                raise LLMError(f"could not create the Bedrock client ({e}); install with `pip install 'larch-verify[bedrock]'`") from e
+            self.region = region
+        elif platform == "vertex":
+            project = os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT")
+            region = os.environ.get("CLOUD_ML_REGION") or "global"
+            if not project:
+                raise LLMError("Vertex AI needs a project: set ANTHROPIC_VERTEX_PROJECT_ID (and optionally CLOUD_ML_REGION)")
+            try:
+                self.client = anthropic.AnthropicVertex(project_id=project, region=region, max_retries=4)
+            except Exception as e:  # noqa: BLE001
+                raise LLMError(f"could not create the Vertex AI client ({e}); install with `pip install 'larch-verify[vertex]'`") from e
+            self.region = region
+        else:
+            self.client = anthropic.Anthropic(max_retries=4)
+
+    def platform_model(self, model: str) -> str:
+        """Model ID as the platform names it (Bedrock prefixes `anthropic.`)."""
+        if self.platform == "bedrock" and not model.startswith(("anthropic.", "arn:", "us.", "eu.", "apac.", "global.")):
+            return "anthropic." + model
+        return model
+
+    def describe(self) -> str:
+        return {"bedrock": f"Amazon Bedrock ({getattr(self, 'region', '')})",
+                "vertex": f"Google Vertex AI ({getattr(self, 'region', '')})"}.get(self.platform, "Anthropic API")
 
     def complete(self, req: LLMRequest) -> LLMResponse:
         anthropic = self._anthropic
         model = resolve_model(req.model)
+        api_model = self.platform_model(model)
         kwargs: dict = {
-            "model": model,
+            "model": api_model,
             "max_tokens": min(req.max_tokens, 64000) if model.startswith("claude-haiku") else req.max_tokens,
             "system": [{"type": "text", "text": req.system, "cache_control": {"type": "ephemeral"}}],
             "messages": [{"role": "user", "content": req.prompt}],
@@ -71,7 +107,11 @@ class AnthropicProvider(Provider):
         except anthropic.BadRequestError as e:
             raise LLMError(f"bad request: {e.message}") from e
         except anthropic.AuthenticationError as e:
-            raise LLMError("Anthropic API authentication failed (set ANTHROPIC_API_KEY)") from e
+            raise LLMError(f"{self.describe()} authentication failed" + (" (set ANTHROPIC_API_KEY)" if self.platform == "anthropic" else "")) from e
+        except anthropic.PermissionDeniedError as e:
+            raise LLMError(f"{self.describe()} denied access to {api_model}: {e.message}") from e
+        except anthropic.NotFoundError as e:
+            raise LLMError(f"model {api_model} is not available on {self.describe()}: {e.message}") from e
         except anthropic.RateLimitError as e:
             raise LLMError("rate limited by the Anthropic API") from e
         except anthropic.APIStatusError as e:
@@ -271,9 +311,15 @@ class FakeProvider(Provider):
 
 
 def make_provider(kind: str = "auto", *, cache: bool = False) -> Provider:
-    """auto: Anthropic API if credentials are configured, else the Claude Code CLI."""
+    """auto: Bedrock or Vertex when selected by the standard Claude Code environment
+    variables (CLAUDE_CODE_USE_BEDROCK / CLAUDE_CODE_USE_VERTEX), else the Anthropic API
+    if credentials are configured, else the Claude Code CLI."""
     if kind == "auto":
-        if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
+        if os.environ.get("CLAUDE_CODE_USE_BEDROCK") in ("1", "true"):
+            kind = "bedrock"
+        elif os.environ.get("CLAUDE_CODE_USE_VERTEX") in ("1", "true"):
+            kind = "vertex"
+        elif os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
             kind = "anthropic"
         elif shutil.which("claude") or (Path.home() / ".local" / "bin" / "claude").exists():
             kind = "claude-code"
@@ -282,10 +328,10 @@ def make_provider(kind: str = "auto", *, cache: bool = False) -> Provider:
                 "No LLM provider available. Set ANTHROPIC_API_KEY, or install and log in to "
                 "Claude Code (`claude`) to use your Claude subscription."
             )
-    if kind == "anthropic":
-        p: Provider = AnthropicProvider()
+    if kind in ("anthropic", "bedrock", "vertex"):
+        p: Provider = AnthropicProvider(kind)
     elif kind in ("claude-code", "claude", "cli"):
         p = ClaudeCodeProvider()
     else:
-        raise LLMError(f"unknown provider {kind!r} (use auto, anthropic or claude-code)")
+        raise LLMError(f"unknown provider {kind!r} (use auto, anthropic, bedrock, vertex or claude-code)")
     return CachingProvider(p) if cache else p

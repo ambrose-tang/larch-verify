@@ -30,7 +30,7 @@ to the code. The report is explicit about this split. It says "specs *proved* ab
 the model" and "implementation *agrees* with the model on N inputs", never "your code is
 verified".
 
-## D2. Tool language: Python. First target language: Python
+## D2. Tool language: Python. First target language: Python (JavaScript/TypeScript since 0.2, see D16)
 
 **Decision.** Larch is written in Python (3.11+), packaged with hatchling, and installable with
 `uv tool install` / `pipx`. The first supported target language is Python.
@@ -141,25 +141,55 @@ tools, hooks, MCP and settings disabled and the system prompt replaced. A
 content-addressed response cache (`--cache`, always on in the benchmark) records nominal
 cost separately from actual spend. A global semaphore limits concurrent CLI calls.
 
+Amazon Bedrock and Google Vertex AI are supported through the Anthropic SDK
+(`--provider bedrock|vertex`, or the `CLAUDE_CODE_USE_BEDROCK` / `CLAUDE_CODE_USE_VERTEX`
+variables a Claude Code installation already sets); `ANTHROPIC_BASE_URL` reaches
+corporate gateways.
+
 **Why.** Developers with a Claude subscription and no API key can use Larch
-immediately, and teams can use API keys in CI. Cost is reported either way: the CLI
+immediately, and teams can use API keys in CI. Many companies may only send code to a
+model through their cloud account, so the cloud platforms are first-class. Cost is reported either way: the CLI
 reports `total_cost_usd`, and the API path prices tokens from a table.
 
-## D9. User code runs in a sandboxed worker; read-only by default
+## D9. Two processes: a driver in Larch's environment, an adapter in the project's
 
-**Decision.** User code runs in a separate process (`larch/py/worker.py`) under the
-*user's* interpreter (their project's `.venv` is detected). It gets per-call SIGALRM
-timeouts, stdout/stderr redirected away from the result channel, stdin closed,
-arguments deep-copied, and no bytecode writes. Hypothesis runs with `database=None`
-and a scratch storage directory. Artifacts (the Lean model, proofs, transcripts,
-reports, patches) go to `~/.cache/larch/runs/…`, not the repository. Fixes are shown as
-diffs and saved as `.patch` files. `--apply` asks before writing, and only applies fixes
-that were validated against the model.
+**Decision.** Test jobs run in a *driver* process on Larch's own interpreter
+(`larch/engine/driver.py`): input generation (hypothesis), the Lean harness, shrinking and
+vacuity checks. The code under test runs in a separate *adapter* process in the
+project's own runtime: `larch/py/adapter.py` (standard library only, CPython >= 3.7) or
+`larch/js/adapter.mjs` (Node built-ins only). They speak JSON lines; values cross as
+tagged JSON (`larch/wire.py`). The adapter redirects the user's stdout/stderr away from
+the protocol channel, closes stdin, and enforces a per-call timeout in-process
+(SIGALRM; a `vm` watchdog in Node). The driver also enforces a hard timeout and
+restarts an adapter that crashes or hangs, recording a crash or timeout for that input.
+Nothing from Larch's environment is ever put on the project's import path, and
+nothing is written into the repository: artifacts go to `~/.cache/larch/runs/…`, fixes
+are diffs and `.patch` files, `--apply` asks first and only applies validated fixes.
+Mutants and fixes for JavaScript/TypeScript are loaded through a Node module hook
+under the original module URL, so relative imports work without temporary files
+next to the user's code.
 
-**Why.** It is the user's code and the user's repository. A verification tool that
-edits files or leaves `__pycache__`/`.hypothesis` behind is not trusted in CI. Timeouts
-turn infinite loops into reportable findings ("does not terminate on a valid input")
-instead of hung runs.
+**Why.** Version 0.1 ran everything in one worker under the project's interpreter and
+borrowed hypothesis and its dependencies from Larch's environment via a symlinked
+PYTHONPATH. That produced a family of `ModuleNotFoundError`s whenever the two
+environments differed: a backport needed only on older Pythons, then hypothesis's
+compiled `_native` extension built for Larch's Python only. It also overwrote the
+user's PYTHONPATH. Splitting the processes removes the coupling entirely: the project's
+runtime needs nothing but its own dependencies, the driver needs nothing from the
+project, and adding a language means writing one small adapter. The cost is one IPC
+round trip per call, which measured the same end to end as before (the Lean harness
+was already one round trip per input).
+
+**Interpreter discovery (Python).** `--python`/config, then an in-project virtualenv
+(searched up to the repository root, so a monorepo-root `.venv` is found from a nested
+package), `$UV_PROJECT_ENVIRONMENT`, `$VIRTUAL_ENV`, `$CONDA_PREFIX`, the project's
+poetry/pipenv/pdm/hatch environment, `python3` on PATH, and Larch's own interpreter
+only as a warned last resort. The import path adds the package root, the file's
+directory, `[tool.larch] pythonpath`, pytest's `pythonpath`, the project root, `src/`
+and the repository root, and implicit namespace packages get their dotted name. The
+module is loaded once *before* any LLM call; an import failure is reported with the
+missing module and, when another discovered interpreter has it, the exact `--python`
+to use.
 
 ## D10. Findings are classified by evidence, not by LLM opinion
 
@@ -235,6 +265,37 @@ violated the spec. Blaming the code there would be wrong.
 languages from the 1980s.
 
 ---
+
+## D16. Languages are backends; the pipeline is language-neutral
+
+**Decision.** A `Language` backend (`larch/lang.py`) supplies function discovery and
+extraction, mutation operators, source splicing, runtime discovery plus the adapter
+command, load-error explanations, and the type-mapping text for the formalization
+prompt. Python (`larch/py/`) and JavaScript/TypeScript (`larch/js/`) are implemented.
+The JS/TS backend uses a small dependency-free lexer rather than the TypeScript
+compiler, so `larch scan` works on any checkout without `node_modules`. TypeScript
+runs through Node's built-in type stripping (Node >= 22.6). JavaScript `number`
+parameters are tested only within ±(2^53 − 1); `bigint` is unbounded. The Python
+prompts are byte-for-byte those of the benchmark.
+
+**Why.** The expensive, carefully evaluated parts (formalization, proving, checking,
+DRT, adjudication) do not depend on the source language; only the edges do. Keeping
+the edges small is what makes the next language (Go, Java) a contained piece of work.
+
+## D17. Repository-scale use: scan, changed functions, CI formats
+
+**Decision.** `larch scan` ranks every function in a repository by how much
+verification is likely to pay off (documented, typed, branchy, pure) and explains every
+skip. `larch verify --changed [REF]` verifies only functions whose lines differ from
+REF (default: merge base with the default branch). Results can be written as SARIF
+(code scanning), JUnit XML (CI test reports) and Markdown (PR comment / job summary).
+A composite GitHub Action (`action.yml`) wires these together, reusing approved specs
+from `.larch/specs/`.
+
+**Why.** Teams adopt a verifier per pull request, not per function: it has to find its
+own targets, stay within a budget, and report in the places reviewers already look.
+Purity and type checks are heuristics on the code (not the docs), so they err toward
+skipping; an explicit `FILE::function` always overrides them.
 
 ## Eval-driven decisions
 

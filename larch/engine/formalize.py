@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from ..lean.lint import lint_lean
 from ..util import unescape_code
 from ..llm.base import UsageLimitError, LLMRequest
-from ..prompts import FORMALIZE_EXAMPLES_ADDENDUM, FORMALIZE_REPAIR, FORMALIZE_SYSTEM, dump, formalize_schema, formalize_user, render_previous
+from ..prompts import FORMALIZE_EXAMPLES_ADDENDUM, FORMALIZE_REPAIR, dump, formalize_schema, formalize_system, formalize_user, render_previous
 from ..spec import FormalSpec, Param, Postcondition, Property, edge_cases_from_json, examples_from_json, harness_module, model_module
 from .context import RunContext
 from .testing import run_drt, run_examples, run_props
@@ -331,7 +331,7 @@ def formalize(ctx: RunContext, *, feedback: str | None = None, previous: FormalS
         if step:
             step.update("writing Lean model and specs" if attempt == 0 else f"repairing (round {attempt})")
         resp = ctx.ask(LLMRequest(
-            system=FORMALIZE_SYSTEM + (FORMALIZE_EXAMPLES_ADDENDUM if cfg.doc_examples else ""),
+            system=formalize_system(ctx.lang.type_guide) + (FORMALIZE_EXAMPLES_ADDENDUM if cfg.doc_examples else ""),
             prompt=prompt, model=cfg.model, stage="formalize",
             effort=cfg.effort, json_schema=formalize_schema(cfg.doc_examples),
         ))

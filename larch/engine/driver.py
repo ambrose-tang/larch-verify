@@ -1,9 +1,11 @@
-"""Sandboxed worker: runs the user's Python function against the Lean model.
+"""Test driver: runs the code under test against the Lean model.
 
-Invoked as `python -m larch.py.worker JOB.json RESULT.json` with the *user's*
-interpreter (so their dependencies import), in a scratch working directory.
-User code never shares a process with Larch itself: it may print, hang, crash,
-or mutate its arguments without affecting the tool.
+Invoked as `python -m larch.engine.driver JOB.json RESULT.json` with LARCH'S OWN
+interpreter, so hypothesis and the rest of Larch are always importable and never
+leak into the project being verified. The code under test runs in a separate
+adapter process in the project's own runtime (see larch/engine/impl_client.py and
+larch/py/adapter.py): it may print, hang, crash or mutate its arguments without
+affecting the driver.
 
 Job kinds
   drt      differential test: implementation vs. model (+ postconditions on impl output)
@@ -13,63 +15,55 @@ Job kinds
 """
 from __future__ import annotations
 
-import copy
 import json
 import os
 import random
-import signal
 import sys
 import time
 import traceback
-import types
 import warnings
 from pathlib import Path
 
+from larch.engine.impl_client import ImplClient, LoadError, child_env
 from larch.lean.harness_client import HarnessClient, HarnessError, HarnessTimeout
 from larch.lean.types import EncodeError, decode, encode, parse_type, perturb, strategy_for
 
 DIVERGENT = ("value", "crash", "timeout", "type")
 
 
-class CallTimeout(BaseException):
-    """Raised by SIGALRM inside user code (BaseException so `except Exception` in
-    user code does not swallow it)."""
-
-
-def _on_alarm(signum, frame):  # pragma: no cover - signal handler
-    raise CallTimeout()
-
-
 # ---------------------------------------------------------------------------
-# Loading user code
+# The code under test (behind the adapter)
 # ---------------------------------------------------------------------------
 
-def load_function(path: str, function: str, source: str | None = None):
-    p = Path(path).resolve()
-    pkg_parts: list[str] = []
-    d = p.parent
-    while (d / "__init__.py").exists():
-        pkg_parts.insert(0, d.name)
-        d = d.parent
-    root = d
-    for entry in (str(p.parent), str(root)):
-        if entry not in sys.path:
-            sys.path.insert(0, entry)
-    modname = ".".join(pkg_parts + [p.stem]) if pkg_parts else p.stem
-    if source is None:
-        source = p.read_text()
-    mod = types.ModuleType(modname)
-    mod.__file__ = str(p)
-    mod.__package__ = ".".join(pkg_parts)
-    sys.modules[modname] = mod
-    code = compile(source, str(p), "exec")
-    exec(code, mod.__dict__)
-    obj = mod
-    for part in function.split("."):
-        obj = getattr(obj, part)
-    if not callable(obj):
-        raise TypeError(f"{function} is not callable")
-    return obj
+class Impl:
+    """The function under test, loaded in the project's runtime."""
+
+    def __init__(self, job: dict):
+        spec = job["impl"]
+        self.load_req = dict(spec["load"])
+        self.client = ImplClient(spec["cmd"], spec["env"], spec["cwd"], log_path=job.get("log_path"))
+
+    def start(self) -> None:
+        self.client.start()
+
+    def load(self, source: str | None = None) -> None:
+        self.client.load(self.load_req, source)
+
+    def call(self, args: list, timeout: float) -> dict:
+        return self.client.call(args, timeout)
+
+    def close(self) -> None:
+        self.client.close()
+
+
+def _ints_within(v, bound: int) -> bool:
+    if isinstance(v, bool):
+        return True
+    if isinstance(v, int):
+        return -bound <= v <= bound
+    if isinstance(v, (list, tuple)):
+        return all(_ints_within(x, bound) for x in v)
+    return True
 
 
 def safe_repr(v, limit: int = 400) -> str:
@@ -78,23 +72,6 @@ def safe_repr(v, limit: int = 400) -> str:
     except Exception as e:  # pragma: no cover
         r = f"<unrepresentable {type(v).__name__}: {e}>"
     return r if len(r) <= limit else r[: limit - 3] + "..."
-
-
-def call_impl(fn, args: list, timeout: float) -> dict:
-    a = copy.deepcopy(args)
-    try:
-        signal.setitimer(signal.ITIMER_REAL, timeout)
-        try:
-            value = fn(*a)
-        finally:
-            signal.setitimer(signal.ITIMER_REAL, 0)
-        return {"status": "ok", "value": value}
-    except CallTimeout:
-        return {"status": "timeout"}
-    except RecursionError as e:
-        return {"status": "exception", "exc": f"RecursionError: {e}"[:300]}
-    except BaseException as e:  # noqa: BLE001 - user code may raise anything
-        return {"status": "exception", "exc": f"{type(e).__name__}: {e}"[:300]}
 
 
 # ---------------------------------------------------------------------------
@@ -112,9 +89,14 @@ class Evaluator:
         self.fn = fn
         self.call_timeout = float(job.get("call_timeout", 1.0))
         self.timeouts = 0
+        # Integers the target runtime represents exactly (e.g. JavaScript numbers);
+        # inputs outside it are outside the function's domain, not bugs.
+        self.int_bound = job.get("int_bound")
 
     def encode_args(self, args) -> list | None:
         if not isinstance(args, (list, tuple)) or len(args) != len(self.params):
+            return None
+        if self.int_bound is not None and not _ints_within(args, int(self.int_bound)):
             return None
         try:
             return [encode(a, t) for a, t in zip(args, self.params)]
@@ -144,7 +126,7 @@ class Evaluator:
         if impl_override is not None:
             req["impl"] = impl_override
         elif with_impl:
-            implres = call_impl(self.fn, args, self.call_timeout)
+            implres = self.fn.call(args, self.call_timeout)
             if implres["status"] == "ok":
                 try:
                     v = encode(implres["value"], self.ret)
@@ -212,7 +194,8 @@ class Evaluator:
 def build_strategy(job: dict, param_types, *, which: str | None = None):
     from hypothesis import strategies as st
 
-    typed = st.tuples(*[strategy_for(t) for t in param_types]) if param_types else st.just(())
+    bound = job.get("int_bound")
+    typed = st.tuples(*[strategy_for(t, int_bound=bound) for t in param_types]) if param_types else st.just(())
     sconf = job.get("strategy") or {}
     mode = which or sconf.get("mode", "typed")
     note = None
@@ -300,13 +283,18 @@ def _dedupe(inputs: list) -> list:
     return out
 
 
-def job_drt(job: dict, harness: HarnessClient) -> dict:
+def _target(job: dict, impl: Impl | None) -> Impl:
+    """The function under test, loaded (raises LoadError if it does not import)."""
+    if impl is None:
+        raise RuntimeError("this job needs the code under test, but no adapter was configured")
+    impl.load(job.get("target", {}).get("source"))
+    return impl
+
+
+def job_drt(job: dict, harness: HarnessClient, impl: Impl | None = None) -> dict:
     t0 = time.monotonic()
     model_only = bool(job.get("model_only"))
-    fn = None
-    if not model_only:
-        tgt = job["target"]
-        fn = load_function(tgt["path"], tgt["function"], tgt.get("source"))
+    fn = None if model_only else _target(job, impl)
     ev = Evaluator(job, harness, fn)
     strategy, note = build_strategy(job, ev.params)
     seed = int(job.get("seed", 0))
@@ -421,14 +409,12 @@ def job_drt(job: dict, harness: HarnessClient) -> dict:
     return result
 
 
-def job_probe(job: dict, harness: HarnessClient) -> dict:
-    tgt = job["target"]
-    fn = load_function(tgt["path"], tgt["function"], tgt.get("source"))
-    ev = Evaluator(job, harness, fn)
+def job_probe(job: dict, harness: HarnessClient, impl: Impl | None = None) -> dict:
+    ev = Evaluator(job, harness, _target(job, impl))
     return {"ok": True, "records": [ev.evaluate(list(a)) for a in job.get("inputs", [])]}
 
 
-def job_mutants(job: dict, harness: HarnessClient, result_path: str) -> dict:
+def job_mutants(job: dict, harness: HarnessClient, result_path: str, impl: Impl | None = None) -> dict:
     t0 = time.monotonic()
     ev = Evaluator(job, harness, None)
     strategy, note = build_strategy(job, ev.params)
@@ -440,7 +426,6 @@ def job_mutants(job: dict, harness: HarnessClient, result_path: str) -> dict:
         r = ev.evaluate(a, with_impl=False)
         if r["kind"] == "model_only":
             valid.append(list(a))
-    tgt = job["target"]
     # Extra inputs (different seed, both generators) used only for surviving mutants.
     extra: list = []
     n_extra = int(job.get("survivor_examples", 1000))
@@ -458,15 +443,18 @@ def job_mutants(job: dict, harness: HarnessClient, result_path: str) -> dict:
         if m["id"] in done_ids:
             continue
         res = {"id": m["id"], "killed": False, "by": None, "specs": [], "counterexample": None}
+        if impl is None:
+            raise RuntimeError("mutation analysis needs the code under test, but no adapter was configured")
         try:
-            fn = load_function(tgt["path"], tgt["function"], m["source"])
-        except BaseException as e:  # noqa: BLE001 - a mutant may not even load
-            res.update(killed=True, by="load_error", detail=f"{type(e).__name__}: {e}"[:200])
+            impl.load(m["source"])
+        except LoadError as e:
+            # Not a detected bug: the mutant is not a valid program in the target runtime.
+            res.update(invalid=True, by="load_error", detail=str(e)[:200])
             out.append(res)
             stream.write(json.dumps(res) + "\n")
             stream.flush()
             continue
-        ev.fn = fn
+        ev.fn = impl
         ev.timeouts = 0
         specs: set[str] = set()
         for a in valid:
@@ -502,14 +490,11 @@ def job_mutants(job: dict, harness: HarnessClient, result_path: str) -> dict:
     return {"ok": True, "valid_inputs": len(valid), "mutants": out, "strategy_note": note, "elapsed": time.monotonic() - t0}
 
 
-def job_examples(job: dict, harness: HarnessClient) -> dict:
+def job_examples(job: dict, harness: HarnessClient, impl: Impl | None = None) -> dict:
     """Check documented examples (args -> expected, or "raises") against the model
     and, unless model_only, against the implementation."""
     model_only = bool(job.get("model_only"))
-    fn = None
-    if not model_only:
-        tgt = job["target"]
-        fn = load_function(tgt["path"], tgt["function"], tgt.get("source"))
+    fn = None if model_only else _target(job, impl)
     ev = Evaluator(job, harness, fn)
     out = []
     for ex in job.get("examples", []):
@@ -546,7 +531,7 @@ def job_examples(job: dict, harness: HarnessClient) -> dict:
         rec["model"] = ev.model_repr(mj)
         rec["model_ok"] = (raises and model_raises) or (not raises and not model_raises and model_val == exp_json)
         if fn is not None:
-            r = call_impl(fn, args, ev.call_timeout)
+            r = fn.call(args, ev.call_timeout)
             if r["status"] == "ok":
                 rec["impl"] = safe_repr(r["value"])
                 try:
@@ -615,29 +600,32 @@ def main(argv: list[str]) -> int:
     os.dup2(log, 1)
     os.dup2(log, 2)
     sys.dont_write_bytecode = True
-    signal.signal(signal.SIGALRM, _on_alarm)
-    sys.setrecursionlimit(max(sys.getrecursionlimit(), 3000))
     h = job["harness"]
-    harness = HarnessClient(h["cmd"], h["env"], h["cwd"], timeout=float(h.get("timeout", 10.0)), stderr_path=job.get("log_path"))
+    harness = HarnessClient(h["cmd"], child_env(h["env"]), h["cwd"], timeout=float(h.get("timeout", 10.0)), stderr_path=job.get("log_path"))
+    impl = Impl(job) if job.get("impl") else None
     try:
         harness.start()
         kind = job["kind"]
         if kind == "drt":
-            res = job_drt(job, harness)
+            res = job_drt(job, harness, impl)
         elif kind == "mutants":
-            res = job_mutants(job, harness, result_path)
+            res = job_mutants(job, harness, result_path, impl)
         elif kind == "props":
             res = job_props(job, harness)
         elif kind == "probe":
-            res = job_probe(job, harness)
+            res = job_probe(job, harness, impl)
         elif kind == "examples":
-            res = job_examples(job, harness)
+            res = job_examples(job, harness, impl)
         else:
             res = {"ok": False, "error": f"unknown job kind {kind}"}
+    except LoadError as e:
+        res = {"ok": False, "error": f"the code under test could not be loaded: {e}", "load_error": e.info}
     except BaseException as e:  # noqa: BLE001
         res = {"ok": False, "error": f"{type(e).__name__}: {e}", "traceback": traceback.format_exc()[-3000:]}
     finally:
         harness.close()
+        if impl is not None:
+            impl.close()
     tmp = result_path + ".tmp"
     Path(tmp).write_text(json.dumps(res, default=repr))
     os.replace(tmp, result_path)

@@ -87,6 +87,7 @@ class MutationSummary:
     survivors: list[str] = field(default_factory=list)
     likely_equivalent: int = 0
     inputs: int = 0
+    invalid: int = 0  # mutants that do not load in the target runtime (not counted)
 
     @property
     def score(self) -> float:
@@ -103,6 +104,9 @@ class MutationSummary:
 class Report:
     function: str
     file: str
+    language: str = "python"
+    line: int = 0
+    runtime: str = ""  # the interpreter that ran the code under test, and why it was chosen
     verdict: str = "error"  # passed | bug | partial | error
     headline: str = ""
     understanding: str = ""

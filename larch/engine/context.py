@@ -12,10 +12,10 @@ from ..config import Config
 from ..lean.checker import Checker
 from ..lean.toolchain import LeanToolchain
 from ..lean.workspace import LeanWorkspace
+from ..lang import FunctionInfo, Language
 from ..llm.base import LLM, LLMRequest, LLMResponse
-from ..py.extract import FunctionInfo
-from ..py.runner import PythonRunner
 from ..ui import UI
+from .runner import JobRunner
 
 
 @dataclass
@@ -24,11 +24,12 @@ class RunContext:
     llm: LLM
     tc: LeanToolchain
     ws: LeanWorkspace
-    runner: PythonRunner
+    runner: JobRunner
     checker: Checker
     info: FunctionInfo
     ui: UI
     run_dir: Path
+    lang: Language | None = None
     stage_seconds: dict = field(default_factory=dict)
     _n: itertools.count = field(default_factory=lambda: itertools.count(1))
     _lock: threading.Lock = field(default_factory=threading.Lock)

@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: Unit tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install
+        run: |
+          uv venv -p ${{ matrix.python }}
+          uv pip install -e ".[dev]"
+      # Older interpreters as *targets*: the adapter must run on them.
+      - run: uv python install 3.8 3.9 3.10
+      - name: Test (Lean integration tests are skipped here)
+        run: uv run --no-sync pytest
+
+  integration:
+    name: Integration tests (real Lean)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.elan
+            ~/.cache/larch/checker
+          key: lean-${{ runner.os }}-${{ hashFiles('larch/lean/toolchain.py', 'larch/lean/assets/**') }}
+      - name: Install
+        run: |
+          uv venv -p 3.12
+          uv pip install -e ".[dev]"
+          if [ ! -x "$HOME/.elan/bin/elan" ]; then
+            curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+          fi
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Lean toolchain and proof checker
+        run: uv run --no-sync python -c "from larch.lean.toolchain import find_toolchain; from larch.lean.checker import Checker; Checker(find_toolchain(install=True)).binary(build=True)"
+      - name: Test
+        run: uv run --no-sync pytest
+      - name: Benchmark ground truth
+        run: uv run --no-sync python -m bench.validate

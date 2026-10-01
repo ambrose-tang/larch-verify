@@ -7,10 +7,9 @@ from dataclasses import dataclass
 
 from ..llm.base import UsageLimitError, BudgetExceeded, LLMError, LLMRequest
 from ..prompts import (
-    ADJUDICATE_SCHEMA, ADJUDICATE_SYSTEM, FIX_SCHEMA, FIX_SYSTEM, FORMALIZE_SYSTEM, MODEL_REPAIR_SCHEMA,
+    ADJUDICATE_SCHEMA, ADJUDICATE_SYSTEM, FIX_SCHEMA, FIX_SYSTEM, MODEL_REPAIR_SCHEMA, formalize_system,
     adjudicate_user, fix_user, model_repair_user,
 )
-from ..py.extract import splice_function
 from ..report import Finding, FixProposal
 from ..spec import FormalSpec, model_module
 from .context import RunContext
@@ -95,7 +94,7 @@ def repair_model(ctx: RunContext, spec: FormalSpec, issues: list[str]) -> tuple[
     for _ in range(2):
         try:
             resp = ctx.ask(LLMRequest(
-                system=FORMALIZE_SYSTEM, prompt=prompt, model=ctx.cfg.model, stage="model-repair",
+                system=formalize_system(ctx.lang.type_guide), prompt=prompt, model=ctx.cfg.model, stage="model-repair",
                 effort=ctx.cfg.effort, json_schema=MODEL_REPAIR_SCHEMA,
             ))
         except UsageLimitError:
@@ -122,7 +121,8 @@ def propose_fix(ctx: RunContext, spec: FormalSpec, recs: list[dict]) -> FixPropo
     for attempt in range(2):
         try:
             resp = ctx.ask(LLMRequest(
-                system=FIX_SYSTEM, prompt=fix_user(info, spec, recs, feedback), model=ctx.cfg.model,
+                system=FIX_SYSTEM, prompt=fix_user(info, spec, recs, feedback, constraints=ctx.lang.fix_constraints(ctx.runner.runtime)),
+                model=ctx.cfg.model,
                 stage="fix", effort=ctx.cfg.effort, json_schema=FIX_SCHEMA,
             ))
         except UsageLimitError:
@@ -133,11 +133,16 @@ def propose_fix(ctx: RunContext, spec: FormalSpec, recs: list[dict]) -> FixPropo
         fixed_fn = str(d.get("fixed_function", "")).strip("\n")
         if not fixed_fn.strip():
             return None
-        new_source = splice_function(info, fixed_fn)
-        try:
-            compile(new_source, str(info.path), "exec")
-        except SyntaxError as e:
-            feedback = f"The fixed function does not parse: {e}"
+        new_source = ctx.lang.splice_function(info, fixed_fn)
+        # The fix must load in the project's own runtime (its version, its installed
+        # packages), not just in Larch's.
+        chk = ctx.runner.check(new_source)
+        if not chk.get("ok"):
+            feedback = (
+                f"The fixed module does not load in the project's environment ({ctx.runner.runtime.display}): "
+                f"{chk.get('error')}. {ctx.lang.fix_constraints(ctx.runner.runtime)}"
+            )
+            last = FixProposal(explanation=str(d.get("explanation", "")).strip(), diff="", validated=False, validation=feedback)
             continue
         # Validate: the patched implementation must agree with the verified model.
         res = run_drt(ctx, spec, n=max(500, ctx.cfg.tests // 2), source=new_source, shrink=True, seed=ctx.cfg.seed + 7)
@@ -155,11 +160,14 @@ def propose_fix(ctx: RunContext, spec: FormalSpec, recs: list[dict]) -> FixPropo
                 validation=f"agrees with the verified model on {counts.get('agree', 0)} inputs",
                 new_source=new_source, base_sha256=sha256(info.module_source),
             )
-        m = res.get("minimal") or (res.get("failures") or [{}])[0]
-        feedback = (
-            f"After your fix, the function still disagrees with the reference model: "
-            f"input ({m.get('args_repr')}) returned {m.get('impl')}, expected {m.get('model')}."
-        )
+        if not res.get("ok"):
+            feedback = f"Running the fixed function failed: {res.get('error')}"
+        else:
+            m = res.get("minimal") or (res.get("failures") or [{}])[0]
+            feedback = (
+                f"After your fix, the function still disagrees with the reference model: "
+                f"input ({m.get('args_repr')}) returned {m.get('impl')}, expected {m.get('model')}."
+            )
         last = FixProposal(explanation=str(d.get("explanation", "")).strip(), diff=diff, validated=False, validation=feedback)
     return last if "last" in locals() else None
 

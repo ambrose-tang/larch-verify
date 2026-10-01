@@ -1,0 +1,140 @@
+name: Larch verify
+description: >-
+  Verification-guided testing for pull requests: writes and proves a Lean 4 model of each
+  changed function and differentially tests the code against it (Python, JavaScript, TypeScript).
+author: Larch contributors
+branding:
+  icon: check-circle
+  color: orange
+
+inputs:
+  paths:
+    description: "Files or directories to verify (space-separated); with `changed`, the default is the whole repository."
+    default: ""
+  changed:
+    description: Verify only functions changed relative to `base-ref`.
+    default: "true"
+  base-ref:
+    description: Base revision for `changed` (default the pull request base, else the merge base with the default branch).
+    default: ""
+  approval:
+    description: >-
+      `approved` - only functions whose specs a person approved and committed under .larch/specs (deterministic
+      regression check); `auto` - also formalize new functions with unreviewed specs (findings are still validated
+      against the code).
+    default: approved
+  prove:
+    description: Also prove the specs in Lean (slower, costs LLM calls; approved specs were proved when approved).
+    default: "false"
+  limit:
+    description: Maximum number of functions per run.
+    default: "10"
+  budget:
+    description: Maximum LLM spend per function, in USD.
+    default: "2"
+  provider:
+    description: LLM provider (auto, anthropic, bedrock, vertex). Credentials come from the job's environment.
+    default: auto
+  model:
+    description: Model for formalization, adjudication and fixes (default from Larch's configuration).
+    default: ""
+  fail-on:
+    description: "`bug` (default): fail only when a bug is found; `partial`: also when a spec is unproved; `never`."
+    default: bug
+  upload-sarif:
+    description: "Upload findings to GitHub code scanning (needs the `security-events: write` permission)."
+    default: "true"
+  larch-version:
+    description: Larch to install (a PyPI version specifier, or `action` to use this action's checkout).
+    default: action
+
+outputs:
+  exit-code:
+    description: "Larch's exit code: 0 passed, 1 bug found, 2 some spec unproved, 3 error."
+    value: ${{ steps.verify.outputs.exit-code }}
+  sarif:
+    description: Path of the SARIF file.
+    value: ${{ steps.verify.outputs.sarif }}
+
+runs:
+  using: composite
+  steps:
+    # uv runs Larch in its own environment and leaves the job's `python`/`node` untouched,
+    # so the project's interpreter (set up by earlier steps) is the one that runs its code.
+    - uses: astral-sh/setup-uv@v6
+
+    - name: Cache Lean toolchain and proof checker
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.elan
+          ~/.cache/larch/checker
+        key: larch-lean-${{ runner.os }}-${{ hashFiles(format('{0}/larch/lean/toolchain.py', github.action_path)) }}
+
+    - name: Install Larch and Lean
+      shell: bash
+      env:
+        LARCH_SPEC: ${{ inputs.larch-version }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        if [ "$LARCH_SPEC" = "action" ]; then
+          uv tool install --quiet "$ACTION_PATH"
+        else
+          uv tool install --quiet "larch-verify${LARCH_SPEC:+==$LARCH_SPEC}"
+        fi
+        if [ ! -x "$HOME/.elan/bin/elan" ]; then
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+        fi
+        echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+        export PATH="$HOME/.elan/bin:$PATH"
+        larch doctor --install
+
+    - name: Verify
+      id: verify
+      shell: bash
+      env:
+        INPUT_PATHS: ${{ inputs.paths }}
+        INPUT_CHANGED: ${{ inputs.changed }}
+        INPUT_BASE: ${{ inputs.base-ref || github.event.pull_request.base.sha }}
+        INPUT_APPROVAL: ${{ inputs.approval }}
+        INPUT_LIMIT: ${{ inputs.limit }}
+        INPUT_BUDGET: ${{ inputs.budget }}
+        INPUT_PROVIDER: ${{ inputs.provider }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_PROVE: ${{ inputs.prove }}
+      run: |
+        set -uo pipefail
+        args=(verify --quiet --no-fix --limit "$INPUT_LIMIT" --budget "$INPUT_BUDGET" --provider "$INPUT_PROVIDER"
+              --sarif larch.sarif --junit larch-junit.xml --json larch.json --markdown "$GITHUB_STEP_SUMMARY")
+        [ -n "$INPUT_MODEL" ] && args+=(--model "$INPUT_MODEL")
+        [ "$INPUT_PROVE" = "true" ] || args+=(--no-proofs)
+        if [ "$INPUT_APPROVAL" = "auto" ]; then args+=(--yes --reuse); else args+=(--approved-only); fi
+        if [ "$INPUT_CHANGED" = "true" ]; then
+          if [ -n "$INPUT_BASE" ]; then
+            git fetch --no-tags --depth=200 origin "$INPUT_BASE" 2>/dev/null || true
+            args+=(--changed "$INPUT_BASE")
+          else
+            args+=(--changed)
+          fi
+        fi
+        # shellcheck disable=SC2206
+        [ -n "$INPUT_PATHS" ] && args+=($INPUT_PATHS)
+        larch "${args[@]}"
+        code=$?
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        echo "sarif=larch.sarif" >> "$GITHUB_OUTPUT"
+        case "$INPUT_FAIL_ON:$code" in
+          never:*|*:0) exit 0 ;;
+          bug:1|partial:1|partial:2) echo "::error::Larch found problems (exit $code); see the job summary"; exit 1 ;;
+          *:3) echo "::warning::Larch could not verify some functions (exit 3); see the job summary"; exit 0 ;;
+          *) exit 0 ;;
+        esac
+
+    - name: Upload SARIF
+      if: always() && inputs.upload-sarif == 'true' && hashFiles('larch.sarif') != ''
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: larch.sarif
+        category: larch

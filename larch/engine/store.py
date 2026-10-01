@@ -11,17 +11,22 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from ..py.extract import FunctionInfo
+from ..lang import FunctionInfo
 from ..spec import FormalSpec
-from ..util import cache_root, sha256, slug
+from ..util import cache_root, project_root as _nearest_project, repo_root, sha256, slug
 
 
 def project_root(path: Path) -> Path:
+    """Where approved specs live: the nearest directory with a `.larch` folder (made by
+    `larch init`, possibly at a monorepo root above the package), else the project root."""
     d = path.resolve().parent
+    top = repo_root(path)
     for cand in [d, *d.parents]:
-        if (cand / ".larch").is_dir() or (cand / ".git").exists() or (cand / "pyproject.toml").exists():
+        if (cand / ".larch").is_dir():
             return cand
-    return d
+        if cand == top:
+            break
+    return _nearest_project(path)
 
 
 def _spec_path(info: FunctionInfo) -> Path:
