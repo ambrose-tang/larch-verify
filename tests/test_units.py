@@ -353,3 +353,29 @@ def test_auth_failure_pauses_instead_of_failing(tmp_path: Path, monkeypatch):
     fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
     with pytest.raises(UsageLimitError):
         prov.ClaudeCodeProvider(binary=str(fake)).complete(LLMRequest(system="s", prompt="p", model="claude-sonnet-5"))
+
+
+def test_english_inside_lean_doc_comments_cannot_open_or_close_one():
+    """A contract that mentions `/-` or `-/` (e.g. about Lean comments) once left a nested
+    comment unterminated and made the whole model fail to compile."""
+    from larch.spec import _doc
+
+    for text in ("no `/-` or `--` in the source", "ends with -/ early", "both /- and -/ here", "/-/"):
+        doc = _doc(text)
+        body = doc[len("/-- "):-len(" -/")]
+        assert "/-" not in body and "-/" not in body, doc
+        assert doc.startswith("/-- ") and doc.endswith(" -/")
+
+
+def test_truncate_keeps_exactly_limit_characters():
+    from larch.util import truncate
+
+    assert truncate("abc", 3) == "abc"
+    for limit in (0, 1, 2, 3, 7, 10):
+        text = "0123456789abcdef"
+        out = truncate(text, limit)
+        head, marker, tail = out.split("\n", 2)[0], out.split("\n")[1], out.split("\n")[2] if out.count("\n") >= 2 else ""
+        assert len(head) + len(tail) == limit, (limit, out)
+        assert marker == f"… [{len(text) - limit} characters truncated] …"
+        assert text.startswith(head) and text.endswith(tail)
+    assert truncate("0", 0) == "\n… [1 characters truncated] …\n"  # was: the whole text appended again

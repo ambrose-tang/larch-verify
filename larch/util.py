@@ -58,6 +58,9 @@ def repo_root(path: str | Path) -> Path:
 
 
 def slug(text: str, maxlen: int = 40) -> str:
+    """A file-name-safe version of `text`: runs of characters other than ASCII letters,
+    digits and `_` become one `_`, leading and trailing `_` are removed, the result is cut
+    to `maxlen` characters, and `"x"` stands in for text with nothing usable."""
     s = re.sub(r"[^A-Za-z0-9_]+", "_", text).strip("_")
     return (s or "x")[:maxlen]
 
@@ -113,16 +116,26 @@ def extract_code_block(text: str, lang: str = "lean") -> str | None:
 
 
 def indent(text: str, n: int = 2) -> str:
+    """Prefix every non-blank line of `text` with `n` spaces. Blank lines are left as they
+    are. Lines are split like `str.splitlines()` (so `\\r\\n` and the other Unicode line
+    boundaries become `\\n`, and a trailing newline is dropped) and joined with `\\n`."""
     pad = " " * n
     return "\n".join(pad + line if line.strip() else line for line in text.splitlines())
 
 
 def truncate(text: str, limit: int) -> str:
+    """`text` itself if it has at most `limit` characters; otherwise its first two thirds
+    of `limit` characters and last third, around a marker line that says how many
+    characters were dropped (so the kept characters are exactly `limit`, never fewer
+    than 0)."""
     if len(text) <= limit:
         return text
-    head = text[: limit * 2 // 3]
-    tail = text[-limit // 3 :]
-    return f"{head}\n… [{len(text) - limit} characters truncated] …\n{tail}"
+    keep = max(limit, 0)
+    keep_head = keep * 2 // 3
+    keep_tail = keep - keep_head
+    head = text[:keep_head]
+    tail = text[len(text) - keep_tail:] if keep_tail else ""  # not text[-0:], which is all of it
+    return f"{head}\n… [{len(text) - keep} characters truncated] …\n{tail}"
 
 
 def _double_escaped(code: str) -> bool:
@@ -153,7 +166,9 @@ def _double_escaped(code: str) -> bool:
 def unescape_code(code: str) -> str:
     """Undo one level of JSON escaping when a model copied it into Lean code
     (e.g. `splitOn \\".\\"` or a literal `\\n` for a newline). Legitimate Lean escapes
-    inside string/char literals are left alone."""
+    inside string/char literals are left alone. Code with no backslash is returned
+    unchanged. In the escapes it undoes, `\\\\` becomes `\\`, `\\"` becomes `"`, `\\n` becomes a
+    newline, and `\\t` becomes TWO SPACES, never a tab (Lean rejects tab characters)."""
     if "\\" not in code or not _double_escaped(code):
         return code
     placeholder = "\x00"

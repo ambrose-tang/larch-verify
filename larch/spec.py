@@ -226,7 +226,9 @@ def _names(params: list[Param]) -> str:
 
 
 def _doc(text: str) -> str:
-    text = " ".join(text.split()).replace("-/", "- /")
+    # Lean block comments nest: neither `-/` (closes early) nor `/-` (opens one never closed)
+    # may appear in English that is placed inside a doc comment.
+    text = " ".join(text.split()).replace("-/", "- /").replace("/-", "/ -")
     return f"/-- {text} -/"
 
 
