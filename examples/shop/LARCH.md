@@ -33,3 +33,17 @@ Contracts for the storefront backend, checked by `larch verify` (see the Larch R
 - The total is the sum of quantity times unit price over all lines.
 - Removing more units than are in the cart removes the whole line.
 
+## service orders
+start: uvicorn shop.api:app --port {port}
+database: postgres
+source: shop/api.py
+- Retrying `POST /orders` with the same Idempotency-Key returns the original order and creates nothing new,
+  whatever has happened to the order since.
+- A payment that fails (402, 404 or 409) changes nothing: no wallet balance and no order status moves.
+- Paying an order debits the customer's wallet by exactly the order amount, once.
+- No wallet balance is ever negative.
+
+# System rules
+- At checkout, the instalments for a cart add up exactly to the cart's total.
+  (uses: web/src/cart.ts::Cart, web/src/payments.ts::splitPayment)
+- Paying an order a second time never charges the customer again.  (uses: service orders)

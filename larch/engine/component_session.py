@@ -21,7 +21,7 @@ from ..lean.toolchain import find_toolchain
 from ..lean.workspace import LeanWorkspace
 from ..llm.base import LLM, BudgetExceeded, Ledger, LLMError, LLMRequest, UsageLimitError
 from ..llm.providers import make_provider
-from ..prompts import COMPONENT_SCHEMA, FIX_SCHEMA, FIX_SYSTEM, FORMALIZE_REPAIR, component_system, component_user
+from ..prompts import COMPONENT_SCHEMA, FIX_SCHEMA, FIX_SYSTEM, FORMALIZE_REPAIR, PYTHON_TYPE_GUIDE, component_system, component_user
 from ..report import FixProposal, MutationSummary, ProofResult, Report, SpecResult
 from ..spec import Param
 from ..ui import UI
@@ -83,7 +83,7 @@ def verify_component(path: Path, name: str, cfg: Config, ui: UI | None = None, *
         report.headline = f"Cannot verify {name}."
     except FormalizeError as e:
         report.verdict = "error"
-        report.error = f"{e}: " + "; ".join(p.splitlines()[0] for p in e.problems[:3])
+        report.error = f"{e}: " + "; ".join(" ".join(ln.strip() for ln in p.splitlines()[:4] if ln.strip())[:300] for p in e.problems[:3])
         report.headline = "Could not formalize this class."
     except UsageLimitError:
         raise
@@ -131,10 +131,12 @@ def job_base(ctx: RunContext, spec: ComponentSpec) -> dict:
 
 
 def run_seq(ctx: RunContext, spec: ComponentSpec, *, n: int, model_only: bool = False, source: str | None = None,
-            exhaustive: bool = False, seed: int | None = None, shrink: bool = True) -> dict:
+            exhaustive: bool = False, seed: int | None = None, shrink: bool = True, cases: list | None = None) -> dict:
     job = job_base(ctx, spec)
     job.update(kind="seq", max_examples=n, model_only=model_only, exhaustive=exhaustive, shrink=shrink,
                exhaustive_limit=ctx.cfg.exhaustive_sequences)
+    if cases is not None:
+        job.update(cases=cases, shrink=False, exhaustive=False)
     if seed is not None:
         job["seed"] = seed
     if source is not None:
@@ -177,8 +179,16 @@ def spec_from_data(ctx: RunContext, data) -> tuple[ComponentSpec | None, list[st
             continue
         ops.append(Operation(method, [Param(str(p.get("name", "")), str(p.get("lean_type", "")).strip())
                                       for p in o.get("params") or [] if isinstance(p, dict)], str(o.get("returns", "Unit")).strip() or "Unit"))
-    observers = [Observer(str(o.get("name", "")).strip(), str(o.get("lean_type", "")).strip(), str(o.get("access", "attribute")))
-                 for o in data.get("observers") or [] if isinstance(o, dict)]
+    # How an observer is read follows from the class itself: a method is called, a
+    # property/getter or field is read.
+    kinds = {m.name: m.kind for m in info.methods}
+    observers = []
+    for o in data.get("observers") or []:
+        if not isinstance(o, dict):
+            continue
+        name = str(o.get("name", "")).strip()
+        access = {"method": "call", "property": "attribute"}.get(kinds.get(name, ""), str(o.get("access", "attribute")))
+        observers.append(Observer(name, str(o.get("lean_type", "")).strip(), access))
     contracts = list(ctx.contracts)
     covered: set[int] = set()
 
@@ -230,6 +240,9 @@ def spec_from_data(ctx: RunContext, data) -> tuple[ComponentSpec | None, list[st
 
 def _norm(name) -> str:
     base = re.sub(r"[^a-z0-9_]+", "_", str(name or "").lower()).strip("_")
+    for prefix in ("spec_", "inv_", "post_"):  # Larch adds these itself
+        if base.startswith(prefix) and len(base) > len(prefix):
+            base = base[len(prefix):]
     return (base if base and base[0].isalpha() else f"c_{base}" if base else "contract")[:40]
 
 
@@ -313,7 +326,12 @@ def formalize(ctx: RunContext, *, feedback: str | None = None, previous: Compone
                 step.update("testing the model against its contracts")
             problems, san = sanity(ctx, spec)
         if spec is not None and not problems:
-            return spec, san, attempt + 1
+            if step:
+                step.update("checking the contracts say what you wrote")
+            problems = fidelity_problems(ctx, spec)
+            if not problems or attempt == cfg.formalize_repairs:
+                ctx.fidelity_warnings = problems  # type: ignore[attr-defined]
+                return spec, san, attempt + 1
         last = problems
         prev = json.dumps(resp.data, indent=2, ensure_ascii=False) if isinstance(resp.data, dict) else str(resp.data)
         prompt = base + "\n" + FORMALIZE_REPAIR.format(previous="```json\n" + prev[:12000] + "\n```",
@@ -321,9 +339,85 @@ def formalize(ctx: RunContext, *, feedback: str | None = None, previous: Compone
     raise FormalizeError("could not produce a consistent state-machine model", last)
 
 
+def fidelity_problems(ctx: RunContext, spec: ComponentSpec) -> list[str]:
+    """The developer's contracts whose formal reading does not mean what they wrote
+    (narrowed, widened or changed), as judged by a separate review call."""
+    from ..prompts import FIDELITY_SCHEMA, FIDELITY_SYSTEM, fidelity_user
+
+    mine = [x for x in list(spec.invariants) + list(spec.steps) if x.origin == "contract" and x.contract]
+    if not mine:
+        return []
+    try:
+        resp = ctx.ask(LLMRequest(system=FIDELITY_SYSTEM, prompt=fidelity_user([(x.contract, x.english, x.lean) for x in mine]),
+                                  model=ctx.cfg.model, stage="fidelity", effort=ctx.cfg.effort, json_schema=FIDELITY_SCHEMA))
+    except (LLMError, BudgetExceeded):
+        return []
+    items = (resp.data or {}).get("items") if isinstance(resp.data, dict) else None
+    out = []
+    for it in items or []:
+        try:
+            x = mine[int(it.get("index", -1))]
+        except (ValueError, TypeError, IndexError):
+            continue
+        if it.get("faithful") is False and str(it.get("problem", "")).strip():
+            out.append(f"`{x.name}` does not say what the developer wrote (\"{x.contract}\"): {str(it['problem']).strip()}. "
+                       "Follow the developer's words, even where the code does something else.")
+    return out
+
+
 # ---------------------------------------------------------------------------
 # The pipeline
 # ---------------------------------------------------------------------------
+
+def _sequence_test(ctx: RunContext, spec: ComponentSpec, what: str) -> tuple[dict, dict | None]:
+    cfg, ui = ctx.cfg, ctx.ui
+    exhaustive = exhaustive_possible(spec)
+    with ui.step(f"Sequence test: the {what} vs. the model") as st, ctx.timed("test"):
+        res = run_seq(ctx, spec, n=cfg.sequences)
+        if not res.get("ok"):
+            raise RuntimeError(f"sequence testing failed: {res.get('error')}")
+        exh = run_seq(ctx, spec, n=0, exhaustive=True) if exhaustive else None
+        if exh is not None and exh.get("ok"):
+            res["failures"] = (exh.get("failures") or []) + res.get("failures", [])
+            if exh.get("minimal") and not res.get("minimal"):
+                res["minimal"] = exh["minimal"]
+            for k, v in exh.get("counts", {}).items():
+                res["counts"][k] = res["counts"].get(k, 0) + v
+        c = res.get("counts", {})
+        valid = sum(c.get(k, 0) for k in ("agree",) + DIVERGENT)
+        dis = sum(c.get(k, 0) for k in DIVERGENT)
+        st.done(f"{valid:,} call sequences · {dis} disagreements", status="ok" if dis == 0 else "warn")
+        if exh is not None and exh.get("ok"):
+            st.line(f"every sequence of up to {exh.get('depth')} calls over the small domains: {exh.get('inputs'):,} sequences")
+        if res.get("strategy_note"):
+            st.line(f"[yellow]{res['strategy_note']}[/]")
+    return res, exh
+
+
+def revise_model(ctx: RunContext, spec: ComponentSpec, issues: list[str]) -> tuple[ComponentSpec | None, str]:
+    """A corrected model (same operations, observers and contracts), compiled and checked
+    against the contracts on random sequences; None if no acceptable revision was found."""
+    from ..prompts import COMPONENT_MODEL_REPAIR_SCHEMA, component_model_repair_user
+
+    problems: list[str] = []
+    for _ in range(2):
+        prompt = component_model_repair_user(ctx.info, module_text(spec), issues, problems)
+        try:
+            resp = ctx.ask(LLMRequest(system=component_system(ctx.lang.type_guide if ctx.lang else PYTHON_TYPE_GUIDE),
+                                      prompt=prompt, model=ctx.cfg.model, stage="model-repair", effort=ctx.cfg.effort,
+                                      json_schema=COMPONENT_MODEL_REPAIR_SCHEMA))
+        except (LLMError, BudgetExceeded):
+            return None, ""
+        d = resp.data if isinstance(resp.data, dict) else {}
+        new = ComponentSpec.from_json(spec.to_json())
+        new.model_code = _strip_ns(unescape_code(str(d.get("model", ""))))
+        problems = new.validate() or build(ctx, new)
+        if not problems:
+            problems, _ = sanity(ctx, new)
+        if not problems:
+            return new, str(d.get("explanation", "")).strip() or "model revised"
+    return None, ""
+
 
 def _run(ctx: RunContext, report: Report, spec_override: ComponentSpec | None) -> None:
     cfg, ui = ctx.cfg, ctx.ui
@@ -350,6 +444,9 @@ def _run(ctx: RunContext, report: Report, spec_override: ComponentSpec | None) -
                 st.done(f"{len(spec.operations)} operations, {len(spec.active_props())} invariants, "
                         f"{len(spec.active_posts())} operation contracts" + (f" · {rounds} rounds" if rounds > 1 else ""))
                 st.line(f"model compiles · {san.valid_inputs} call sequences, no contract violated by the model")
+                for w in getattr(ctx, "fidelity_warnings", None) or []:
+                    st.line(f"[yellow]⚠ {w}[/]")
+                    report.warnings.append("possible mistranslation: " + w)
                 if san.impl_disagreements:
                     st.line(f"[yellow]the class already disagrees with the model on {san.impl_disagreements} of 100 quick-test sequences[/]")
             if cfg.auto_approve:
@@ -383,45 +480,43 @@ def _run(ctx: RunContext, report: Report, spec_override: ComponentSpec | None) -
     report.precondition = spec.init_pre_english
     (ctx.run_dir / "spec.json").write_text(json.dumps(spec.to_json(), indent=2, ensure_ascii=False))
 
-    # ---- sequence testing ----------------------------------------------------------------------
-    exhaustive = exhaustive_possible(spec)
+    # ---- sequence testing (revising the model when it, not the code, is wrong) -----------------
     what = "service" if getattr(ctx, "service_impl", None) else "class"
-    with ui.step(f"Sequence test: the {what} vs. the model") as st, ctx.timed("test"):
-        res = run_seq(ctx, spec, n=cfg.sequences)
-        if not res.get("ok"):
-            raise RuntimeError(f"sequence testing failed: {res.get('error')}")
-        exh = run_seq(ctx, spec, n=0, exhaustive=True) if exhaustive else None
-        if exh is not None and exh.get("ok"):
-            for k in ("failures",):
-                res[k] = (exh.get(k) or []) + res.get(k, [])
-            if exh.get("minimal") and not res.get("minimal"):
-                res["minimal"] = exh["minimal"]
-            for k, v in exh.get("counts", {}).items():
-                res["counts"][k] = res["counts"].get(k, 0) + v
+    for repair_round in range(cfg.model_repairs + 1):
+        res, exh = _sequence_test(ctx, spec, what)
         c = res.get("counts", {})
         valid = sum(c.get(k, 0) for k in ("agree",) + DIVERGENT)
         dis = sum(c.get(k, 0) for k in DIVERGENT)
-        st.done(f"{valid:,} call sequences · {dis} disagreements", status="ok" if dis == 0 else "warn")
-        if exh is not None and exh.get("ok"):
-            st.line(f"every sequence of up to {exh.get('depth')} calls over the small domains: {exh.get('inputs'):,} sequences")
-        if res.get("strategy_note"):
-            st.line(f"[yellow]{res['strategy_note']}[/]")
-    report.drt = {"valid": valid, "disagreements": dis, "counts": c, "inputs": res.get("inputs", 0), "kind": "sequences",
-                  "exhaustive_depth": exh.get("depth") if exh and exh.get("ok") else None,
-                  "exhaustive_cases": exh.get("inputs") if exh and exh.get("ok") else 0}
-    cls = classify(res)
-    findings = []
-    if cls.unexplained:
-        with ui.step("Adjudicate disagreements") as st, ctx.timed("adjudicate"):
-            for r in cls.unexplained[:2]:
-                verdict, why = adjudicate(ctx, spec, r) if cfg.adjudicate else ("implementation_bug", "")
-                st.line(f"{r.get('args_repr', '').splitlines()[-1]}: class {r.get('impl')} vs model {r.get('model')} → [bold]{verdict.replace('_', ' ')}[/]")
-                conf = {"implementation_bug": "likely", "model_bug": None}.get(verdict, "possible")
-                if conf:
-                    findings.append(make_finding(r, r["kind"], conf, why or r.get("detail", ""), count=count_kind(res, r)))
-                else:
-                    report.warnings.append(f"the model (not the class) looks wrong here: {why[:200]}")
-            st.done(f"{len(cls.unexplained[:2])} case(s)")
+        report.drt = {"valid": valid, "disagreements": dis, "counts": c, "inputs": res.get("inputs", 0), "kind": "sequences",
+                      "exhaustive_depth": exh.get("depth") if exh and exh.get("ok") else None,
+                      "exhaustive_cases": exh.get("inputs") if exh and exh.get("ok") else 0}
+        cls = classify(res)
+        findings, model_issues = [], []
+        if cls.unexplained:
+            with ui.step("Adjudicate disagreements") as st, ctx.timed("adjudicate"):
+                for r in cls.unexplained[:3]:
+                    verdict, why = adjudicate(ctx, spec, r) if cfg.adjudicate else ("implementation_bug", "")
+                    st.line(f"{r.get('args_repr', '').splitlines()[-1]}: {what} {r.get('impl')} vs model {r.get('model')} → [bold]{verdict.replace('_', ' ')}[/]")
+                    conf = {"implementation_bug": "likely", "model_bug": None}.get(verdict, "possible")
+                    if conf:
+                        findings.append(make_finding(r, r["kind"], conf, why or r.get("detail", ""), count=count_kind(res, r)))
+                    else:
+                        model_issues.append(f"After\n```\n{r.get('args_repr')}\n```\nthe {what} gives {r.get('impl')} but the model "
+                                            f"gives {r.get('model')}. Reviewer: {why}")
+                st.done(f"{len(cls.unexplained[:3])} case(s)")
+        if model_issues and not findings and repair_round < cfg.model_repairs:
+            with ui.step("Revise model (the model, not the code, was wrong)") as st, ctx.timed("formalize"):
+                new, why = revise_model(ctx, spec, model_issues)
+                if new is not None:
+                    spec = new
+                    (ctx.run_dir / "spec.json").write_text(json.dumps(spec.to_json(), indent=2, ensure_ascii=False))
+                    report.model_revisions.append(why)
+                    st.done(why[:120])
+                    continue
+                st.done("could not revise the model", status="warn")
+        for mi in model_issues:
+            report.warnings.append(f"the model (not the {what}) looks wrong here: " + mi.split("Reviewer: ")[-1][:200])
+        break
     for r in cls.spec_problems[:2]:
         report.warnings.append(f"contract {', '.join(r.get('model_violates', []))} fails on the model after:\n{r.get('args_repr')}")
 
@@ -499,12 +594,13 @@ def _run(ctx: RunContext, report: Report, spec_override: ComponentSpec | None) -
     actionable = [f for f in findings if f.confidence in ("confirmed", "likely")]
     if actionable and cfg.propose_fixes:
         with ui.step("Propose a fix (validated against the verified model)") as st, ctx.timed("fix"):
-            fix = hooks.get("fix", propose_fix)(ctx, spec, [r for r in (res.get("minimal"), *res.get("failures", [])) if r][:3])
+            fix = hooks.get("fix", propose_fix)(ctx, spec, fix_examples(res))
             if fix is not None:
                 patch = ctx.run_dir / "fix.patch"
                 patch.write_text(fix.diff)
                 fix.patch_path = str(patch)
-                actionable[0].fix = fix
+                fixed = set(getattr(fix, "fixes", []) or [])
+                next((f for f in actionable if f.args_repr in fixed), actionable[0]).fix = fix
                 st.done("validated" if fix.validated else "could not validate a fix", status="ok" if fix.validated else "warn")
             else:
                 st.done("no fix proposed", status="warn")
@@ -513,7 +609,7 @@ def _run(ctx: RunContext, report: Report, spec_override: ComponentSpec | None) -
     if actionable:
         f = actionable[0]
         report.verdict = "bug"
-        report.headline = f"{f.title()}: after `{f.args_repr.splitlines()[-1]}` the class gives {f.impl}, the model {f.model}."
+        report.headline = f"{f.title()}: after `{f.args_repr.splitlines()[-1]}` the {what} gives {f.impl}, the model {f.model}."
     elif proved == total and total and valid:
         report.verdict = "passed"
         depth = report.drt.get("exhaustive_depth")
@@ -523,6 +619,51 @@ def _run(ctx: RunContext, report: Report, spec_override: ComponentSpec | None) -
     else:
         report.verdict = "partial"
         report.headline = f"{proved}/{total} contracts proved; the class agrees with the model on {valid:,} call sequences."
+
+
+def fix_examples(res: dict) -> list[dict]:
+    """One shrunk failing sequence per distinct disagreement, then other failures."""
+    recs, seen = [], set()
+    for r in [*(res.get("minimals") or [res.get("minimal")]), *res.get("failures", [])]:
+        if r and r.get("group", id(r)) not in seen:
+            seen.add(r.get("group", id(r)))
+            recs.append(r)
+    return recs[:4]
+
+
+def fix_accepted(res: dict, exh: dict | None, targets: list[dict], run_original) -> tuple[bool, str, list[str]]:
+    """Whether a fix is accepted, why, and which of the shown failures (`targets`, by
+    their call sequence) it fixes. Accepted if the fixed code agrees with the model, or
+    if it removes at least one shown disagreement and every remaining one is in the
+    original code too, failing in exactly the same way (another bug, reported separately)."""
+    exh = exh or {"ok": True, "counts": {}}
+    c = dict(res.get("counts", {}))
+    for k, v in (exh.get("counts") or {}).items():
+        c[k] = c.get(k, 0) + v
+    bad = sum(c.get(k, 0) for k in DIVERGENT)
+    if not (res.get("ok") and exh.get("ok")) or c.get("agree", 0) == 0:
+        return False, res.get("error") or exh.get("error") or "no sequence agreed with the model", []
+    if bad == 0:
+        return True, f"agrees with the verified model on {c.get('agree', 0):,} sequences", [t.get("args_repr", "") for t in targets]
+    failures = (exh.get("failures") or []) + (res.get("failures") or [])
+    remaining = {f.get("group") for f in failures}
+    fixed_targets = [t for t in targets if t.get("group") and t.get("group") not in remaining]
+    if not fixed_targets:
+        return False, "the disagreements it was meant to fix remain", []
+    fixed = {json.dumps(f["case"]): f.get("group") for f in failures if f.get("case")}
+    if not fixed:
+        return False, f"{bad} disagreement(s) remain", []
+    sample = list(fixed)[:20]
+    orig = run_original([json.loads(k) for k in sample])
+    before = {json.dumps(f["case"]): f.get("group") for f in orig.get("failures") or [] if f.get("case")}
+    known = set(before.values()) | {t.get("group") for t in targets}
+    # Each remaining failure must be one the original code has too (it may fail earlier
+    # there, on the bug that was fixed), and of a kind the original code shows.
+    if not orig.get("ok") or any(k not in before for k in sample) or any(fixed[k] not in known for k in sample):
+        return False, "the fix changes behaviour that the original code got right, or fails differently", []
+    return True, (f"fixes {len(fixed_targets)} of the reported disagreements; agrees with the verified model on "
+                  f"{c.get('agree', 0):,} sequences; {bad} other disagreement(s) are in the original code too "
+                  "(a separate problem)"), [t.get("args_repr", "") for t in fixed_targets]
 
 
 def propose_fix(ctx: RunContext, spec: ComponentSpec, recs: list[dict]) -> FixProposal | None:
@@ -560,13 +701,14 @@ def propose_fix(ctx: RunContext, spec: ComponentSpec, recs: list[dict]) -> FixPr
         c = dict(res.get("counts", {}))
         for k, v in (exh.get("counts") or {}).items():
             c[k] = c.get(k, 0) + v
-        bad = sum(c.get(k, 0) for k in DIVERGENT)
-        if res.get("ok") and exh.get("ok") and bad == 0 and c.get("agree", 0) > 0:
+        ok, note, fixes = fix_accepted(res, exh, recs, lambda cases: run_seq(ctx, spec, n=0, cases=cases))
+        if ok:
             from ..util import sha256
 
-            return FixProposal(str(d.get("explanation", "")).strip(), diff, True,
-                               f"agrees with the verified model on {c.get('agree', 0)} call sequences",
-                               new_source=new_source, base_sha256=sha256(info.module_source))
+            fix = FixProposal(str(d.get("explanation", "")).strip(), diff, True, note,
+                              new_source=new_source, base_sha256=sha256(info.module_source))
+            fix.fixes = fixes  # type: ignore[attr-defined]
+            return fix
         m = res.get("minimal") or (res.get("failures") or [{}])[0]
         feedback = f"After your fix the class still disagrees with the model:\n```\n{m.get('args_repr')}\n```\nclass {m.get('impl')}, model {m.get('model')}"
         last = FixProposal(str(d.get("explanation", "")).strip(), diff, False, feedback)

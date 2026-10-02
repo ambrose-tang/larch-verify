@@ -90,7 +90,7 @@ def verify_function(path: Path, func: str, cfg: Config, ui: UI | None = None, *,
         (run_dir / "error.txt").write_text(str(e) + "\n")
     except FormalizeError as e:
         report.verdict = "error"
-        report.error = f"{e}: " + "; ".join(p.splitlines()[0] for p in e.problems[:3])
+        report.error = f"{e}: " + "; ".join(" ".join(ln.strip() for ln in p.splitlines()[:4] if ln.strip())[:300] for p in e.problems[:3])
         report.headline = "Could not formalize this function."
     except UsageLimitError:
         raise  # not a property of the function: let the caller pause or report it
@@ -248,6 +248,7 @@ def _run(ctx: RunContext, report: Report, spec_override: FormalSpec | None) -> N
                         report.warnings.append("unresolved model disagreement: " + mi[:200])
                     break
                 spec = new
+                (ctx.run_dir / "spec.json").write_text(json.dumps(spec.to_json(), indent=2, ensure_ascii=False))
                 report.model_revisions.append(why)
                 st.done(why[:120])
                 if conflict:

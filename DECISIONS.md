@@ -355,6 +355,50 @@ in the model makes exactly that bug a disagreement. Bounded-exhaustive sequences
 (the "small scope hypothesis") find interaction bugs that random sequences reach rarely,
 at a predictable cost.
 
+## D21. A service is a state machine over HTTP, against a real throwaway database
+
+**Decision.** `## service NAME` names a command that starts the service on `{port}`.
+Larch starts the database itself (Docker or local Postgres run as an unprivileged user,
+SQLite, or an external URL), resets it between sequences with `TRUNCATE … RESTART
+IDENTITY`, and drives the service through the same `new`/`invoke`/`observe` interface as
+a class instance (`new` = reset). Each endpoint is an operation returning `Nat × Option
+T₁ × …`: the status and the response fields the formalizer selects. Parameters say where
+they travel (path, query, header, body), and only values HTTP can carry are generated.
+Mutants and fixes run on a copy of the project started on another port against the same
+database.
+
+**Why.** Mocks would test the developer's beliefs about the database, not the database;
+most service bugs (an idempotency check scoped to the wrong rows, a debit before a
+status check) live in the SQL. Resetting identities makes serial ids part of the
+compared behaviour instead of noise. Status plus selected fields is the contract a
+client sees; full bodies would couple the model to incidental fields.
+
+## D22. System rules are proved from component contracts (assume–guarantee)
+
+**Decision.** A rule names the components it uses. Their models are composed into one
+Lean module, each in its own namespace, and the rule is stated as
+`contract₁ → … → contractₙ → P` over them, with the contracts chosen by the formalizer
+from those the components carry. The verdict depends on how each contract was
+established (proved, or only tested) and whether each component agrees with its model.
+
+**Why.** Composing models rather than re-testing everything end to end keeps each
+component's verification reusable and the rule's proof small. Stating the contracts as
+hypotheses makes the dependency explicit: if a contract is only tested, the report says
+the rule rests on a tested assumption, rather than overstating what was proved.
+
+## D23. Sequences are guided by the model's coverage
+
+**Decision.** Half of the sequences are random; the other half are grown from a corpus
+of sequences that reached new model behaviour (an operation's outcome class, and runs of
+two and three of them), choosing parents and final cases by rarity. Only the model runs
+during generation.
+
+**Why.** Interesting states need specific prefixes (deposit, create an order for the
+same customer, pay it). Uniform random sequences reached a successful payment in about
+1% of cases in the shop example; guided generation reaches it in 40% for a few seconds
+of model evaluation, and the implementation, which is the expensive side, runs only on
+the chosen cases.
+
 ## Eval-driven decisions
 
 The data is in [EVALS.md](EVALS.md). Each choice below won a head-to-head comparison on

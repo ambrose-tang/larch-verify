@@ -702,6 +702,8 @@ comparing every result and every observer after every call.
   catches a method that corrupts the state and then raises.
 - Model the INTENDED behaviour from the docstrings, names and obvious purpose. Never copy
   a bug (for example, a transfer that credits before checking funds).
+- The developer's contracts are the specification. Where the code is narrower or
+  different, the model and the contract follow the developer's words, not the code.
 - Larch generates `Reachable`, `pre_init`, `inv_*`, `post_*` and `spec_*`; never define them.
 
 ## Contracts
@@ -721,7 +723,8 @@ comparing every result and every observer after every call.
 `hypothesis.strategies`; no imports) that returns a dict: `"init"` -> a strategy of
 constructor argument tuples, and each method name -> a strategy of its argument tuples.
 Use small value pools so calls interact: e.g. account names from `st.sampled_from(["a", "b", "c"])`
-and amounts from `st.integers(-2, 20)`, including invalid values the methods must reject.
+and amounts from `st.integers(-2, 20)` or a handful of values, including invalid values the
+methods must reject. Values should collide often, so later calls see the effects of earlier ones.
 `exhaustive_domains` is a JSON object with the same keys, each a SHORT explicit list of
 argument arrays (2-6 entries), e.g. {"init": [[]], "deposit": [["a", 1], ["b", 5], ["a", -1]]};
 Larch runs every call sequence over them up to the longest length that fits its budget.
@@ -862,6 +865,10 @@ Model IDs the same way (a counter starting at 1).
   unchanged state. If an operation selects no fields, its result is just `Nat`.
 - Model the INTENDED behaviour from the API description and docstrings. Never copy a bug
   (for example, a payment that debits the wallet before checking the order's status).
+- The developer's contracts are the specification. Where the code is narrower or
+  different (a SQL filter such as `AND status = 'pending'`, an extra condition, a
+  different error), the model and the contract follow the developer's words, not the
+  code: the disagreement is exactly what testing is meant to find.
 - Validation errors (e.g. 422 for a non-positive amount) are part of the behaviour: model
   them exactly as documented.
 - Larch generates `Reachable`, `pre_init`, `inv_*`, `post_*`, `spec_*`; never define them.
@@ -876,14 +883,17 @@ Model IDs the same way (a counter starting at 1).
 Each operation parameter says where it goes: `path` (fills `{key}` in the path), `query`,
 `header` (e.g. Idempotency-Key), or `body` (a field of the JSON body). Use small value
 pools in the generator so requests interact: ids from `st.integers(1, 4)`, customer names
-from `st.sampled_from(["c1", "c2"])`, amounts from `st.integers(-1, 500)`, header keys from
-`st.sampled_from(["k1", "k2"])`. Mark a response field `opaque` only if its value is random
-(UUIDs, timestamps); serial ids are not opaque.
+from `st.sampled_from(["c1", "c2"])`, amounts from a handful of values such as
+`st.sampled_from([-1, 0, 30, 50, 100])` (so deposits, prices and balances line up and the
+success paths are reached often), header keys from `st.sampled_from(["k1", "k2"])`. Mark a
+response field `opaque` only if its value is random (UUIDs, timestamps); serial ids are not
+opaque.
 
 `input_generator` is Python SOURCE CODE defining `def strategy(st):` (no imports) returning
 a dict from operation name to a strategy of its argument tuples (and "init": st.just(())).
 `exhaustive_domains`: a JSON object with the same keys, each a SHORT list (2-4) of argument
-arrays, or "".
+arrays, or "". Pick values that reach each endpoint's success path in a few calls (a deposit
+large enough to pay for an order, the ids those orders get).
 """
 
 SERVICE_SCHEMA = {
@@ -959,3 +969,148 @@ Formalize the HTTP service `{name}` as a state machine.
 Model every endpoint that changes or reads state. Return the JSON object described by the
 schema. Operation and contract names are snake_case identifiers.
 """
+
+
+# ---------------------------------------------------------------------------
+# System rules (a `# System rules` bullet in LARCH.md)
+# ---------------------------------------------------------------------------
+
+RULE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "english": {"type": "string", "description": "what YOUR Lean statement says, in plain English"},
+        "lean": {"type": "string", "description": "the rule as a Lean Prop over the components' definitions (no `def`, no `theorem`)"},
+        "assumes": {"type": "array", "items": {"type": "string"},
+                    "description": "component contracts the rule follows from, by their full names as listed"},
+        "notes": {"type": "string"},
+    },
+    "required": ["english", "lean", "assumes", "notes"],
+    "additionalProperties": False,
+}
+
+RULE_SYSTEM = f"""\
+You are Larch's system-rule formalizer. A developer states a guarantee about how several
+components of their system work together. Each component already has an executable Lean
+model, checked against the real code by differential testing, and a set of contracts
+(Lean propositions `spec_*`) about that model.
+
+Write the rule as ONE Lean proposition over the components' definitions, and name the
+component contracts it follows from. Larch then proves
+
+    (contract₁) → (contract₂) → … → (your rule)
+
+so the rule is established from the contracts (assume–guarantee reasoning): it holds for
+any implementation that meets them, and Larch reports which contracts it rests on.
+
+Rules:
+- Refer to definitions by their namespaced names exactly as shown (e.g. `Cart.Reachable`,
+  `Cart.op_add`, `splitPayment.model`, `splitPayment.pre`). `Larch` is open.
+- Preserve the developer's meaning exactly. Quantify over everything the English leaves
+  free; for a stateful component, quantify over its reachable states (`X.Reachable s`).
+  Add only the hypotheses a component's own precondition requires, and say so in "english".
+- "assumes" lists contracts by full name (`Cart.spec_no_negative_qty`). Choose the ones
+  a proof needs; prefer few. Listing a contract you do not need is harmless; missing one
+  may make the rule unprovable.
+- The proposition must type-check against the definitions shown. Use only core Lean 4
+  (no Mathlib). {FORBIDDEN}
+"""
+
+
+def rule_user(rule_text: str, modules: str, inventory: list[tuple[str, str, str]], feedback: str = "") -> str:
+    inv = "\n".join(f"- `{n}` ({status}): {english}" for n, english, status in inventory) or "(none)"
+    out = (f"## The rule (from LARCH.md)\n{rule_text}\n\n## Component definitions (already imported)\n```lean\n{modules}\n```\n\n"
+           f"## Component contracts available as assumptions\n{inv}\n")
+    if feedback:
+        out += f"\n## Your previous answer had problems\n{feedback}\n\nFix them and answer again.\n"
+    return out
+
+
+def rule_prove_user(modules: str, statement: str, english: str, header: str, attempts: list[tuple[str, str]]) -> str:
+    parts = [
+        "## Definitions (already imported; `Larch` and `Larch.System` are open)",
+        f"```lean\n{modules}\n```",
+        "## Target",
+        f"Prove `rule`, which is:\n```lean\n{statement}\n```",
+        f"In plain English: {english}",
+        "The hypotheses are component contracts: `intro` them and use them (unfold a `spec_*` with `unfold` or "
+        "`simp only [...] at h` to see its statement). Unfold the component definitions as needed.\n"
+        "- A state reached by an operation is reachable again: from `hs : X.Reachable s` and "
+        "`h : X.op_m s args = some (s', r)` you get `X.Reachable.op_m s args s' r hs h : X.Reachable s'` "
+        "(constructor arguments in the order shown by `inductive Reachable`). Use it to apply a contract twice.\n"
+        "- `∀ r ∈ o, P r` for an `Option`: `intro r hr` then `simp at hr` or `cases o` / `Option.mem_def`.\n"
+        "- Facts about a lookup after an update (e.g. `List.find?` after `List.map`) need a helper lemma "
+        "proved by `induction xs with | nil => simp | cons x xs ih => simp [List.map, List.find?]; split <;> simp_all`. "
+        "State it for an arbitrary list, prove it first, then use it.",
+        f"Your block must end with a theorem using exactly this header:\n```lean\n{header} := by\n```",
+    ]
+    if attempts:
+        parts.append("## Your previous attempts and Lean's errors (most recent last)")
+        for i, (code, err) in enumerate(attempts, 1):
+            parts.append(f"### Attempt {i}\n```lean\n{code}\n```\nLean reported:\n```\n{err}\n```")
+        parts.append("Write a corrected, complete proof. Change strategy if the same approach keeps failing.")
+    return "\n\n".join(parts)
+
+
+COMPONENT_MODEL_REPAIR_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "model": {"type": "string", "description": "the complete corrected model code (State, init, op_*, obs_*, helpers)"},
+        "explanation": {"type": "string", "description": "one sentence: what was wrong in the model"},
+    },
+    "required": ["model", "explanation"],
+    "additionalProperties": False,
+}
+
+
+def component_model_repair_user(info, model_text: str, issues: list[str], problems: list[str]) -> str:
+    out = f"""\
+## The code
+```
+{info.source}
+```
+
+## Current Lean model and APPROVED contracts (generated file; only the model code may change)
+```lean
+{model_text}
+```
+
+## Where the model is wrong (a reviewer compared it with the code and its documented intent)
+{chr(10).join('- ' + i for i in issues)}
+
+Return the complete corrected model code: the `structure State`, `init`, every `op_*` and
+`obs_*` with the SAME names and signatures, and any helpers. Change only what the problem
+requires. Every approved contract must still hold for the corrected model.
+"""
+    if problems:
+        out += "\n## Your previous revision was rejected\n" + "\n".join(f"- {p}" for p in problems) + "\n"
+    return out
+
+
+FIDELITY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "items": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"index": {"type": "integer"}, "faithful": {"type": "boolean"},
+                           "problem": {"type": "string", "description": "empty if faithful; else what was narrowed, widened or changed"}},
+            "required": ["index", "faithful", "problem"], "additionalProperties": False}},
+    },
+    "required": ["items"],
+    "additionalProperties": False,
+}
+
+FIDELITY_SYSTEM = """\
+You review formalizations of a developer's requirements. For each requirement you get the
+developer's words and a formal reading (English restatement and Lean). Decide whether
+the reading means the same thing. It is NOT faithful if it narrows the requirement
+(adds a condition the developer did not state, such as "if the order is still pending"
+when the developer said "whatever has happened since"), widens it, or changes what is
+promised. Precision the developer left implicit (types, how absent values are encoded,
+the status codes of the API) is fine. Judge only meaning; do not judge style."""
+
+
+def fidelity_user(items: list[tuple[str, str, str]]) -> str:
+    out = []
+    for i, (wrote, english, lean) in enumerate(items):
+        out.append(f"### {i}\nDeveloper: {wrote}\nReading: {english}\nLean: `{' '.join(lean.split())}`")
+    return "\n\n".join(out)

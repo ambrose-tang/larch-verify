@@ -178,6 +178,74 @@ not just one call:
 - Mutation analysis and validated fixes work as for functions; a fix must agree with the
   model on every sequence before it is offered.
 
+### Services and databases
+
+A `## service NAME` heading verifies a running HTTP service, database included:
+
+```markdown
+## service orders
+start: uvicorn shop.api:app --port {port}
+database: postgres
+- Retrying `POST /orders` with the same Idempotency-Key returns the original order.
+- A payment that fails (402, 404 or 409) changes nothing.
+```
+
+- **Larch runs it.** It starts a throwaway database (`postgres` through Docker or local
+  binaries, `sqlite`, `none`, or a URL you give), sets `DATABASE_URL` and `PORT`, runs
+  `start:` (optionally after `setup:`), and reads the OpenAPI description and the route
+  source (`source:` narrows it). Between request sequences it empties every table and
+  restarts id sequences, so ids are predictable; `reset:` adds a request or command of
+  your own.
+- **The model is a state machine whose operations are endpoints.** Each returns the
+  status code and the response fields that matter; contracts and invariants are proved
+  exactly as for classes. Values that are random by design (UUIDs, timestamps) are
+  compared by order of first appearance.
+- **Request sequences** are compared with the model step by step. Mutation analysis and
+  validated fixes run on a copy of your project started on its own port; your working
+  tree is never changed. `--apply` writes a validated fix to the handler's file.
+
+### Finding deep bugs
+
+Sequences are generated against the model first, which is cheap: Larch keeps the
+sequences that reach new behaviour (a new outcome of an operation, or a new run of two
+or three outcomes), grows them by adding and replacing calls, and runs the
+implementation on the rarest. In the shop example this raises the share of sequences
+that contain a successful payment from about 1% to 40%, so "pay, then pay again" and
+"retry after paying" are tested hundreds of times rather than by luck. Failures shrink
+by removing calls one at a time.
+
+When the reviewer finds that the model, not the code, is wrong about a disagreement,
+Larch revises the model (same operations and contracts), re-checks it and re-tests,
+instead of reporting a bug in correct code.
+
+### System rules
+
+Guarantees about components working together go under `# System rules`, each naming the
+components it relies on:
+
+```markdown
+# System rules
+- At checkout, the instalments for a cart add up exactly to the cart's total.
+  (uses: web/src/cart.ts::Cart, web/src/payments.ts::splitPayment)
+- Paying an order a second time never charges the customer again.  (uses: service orders)
+```
+
+After verifying those components, Larch puts their Lean models side by side, writes the
+rule as one Lean proposition over them, and proves
+
+    contract of Cart → contract of splitPayment → rule
+
+so the rule holds for **any** implementation that meets those contracts. The report says
+which contracts the rule rests on and how each was established:
+
+| result | meaning |
+|---|---|
+| passed | proved from contracts that are themselves proved, about models the code agrees with |
+| partial | proved, but some contract it rests on is only tested; or not proved |
+| bug | proved, but a component it uses disagrees with its model |
+
+Rules run with `larch verify` (no arguments), after the components.
+
 ## Team workflow
 
 1. **Write and approve contracts once.** `larch init` creates `.larch/` and drafts
@@ -351,6 +419,7 @@ permissions, like your tests), and Larch writes nothing into your repository.
 | classes | public methods and `@property`s; `__init__` or `@dataclass` constructors | public methods and getters; constructors (incl. parameter properties) |
 | values | `int`, `bool`, `str`, single characters, lists, tuples, `Optional` | integer `number`s (within ±2^53−1), `bigint`, `boolean`, `string`, arrays, tuples, `null`/`undefined`/optional |
 | errors | documented exceptions | documented `throw`s |
+| services | any HTTP service you can start with a command (JSON bodies); mutants and fixes for Python handlers | the same; mutants and fixes are Python-only for now |
 | not yet | floats; dicts, sets and objects as arguments or results; I/O; async; generators; `*args` | non-integer numbers; objects/`Map`/`Date` as arguments or results; async; generators; rest/destructured parameters |
 
 Larch refuses these up front (and `larch scan` says why) rather than giving an

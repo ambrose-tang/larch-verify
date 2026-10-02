@@ -57,6 +57,7 @@ def cmd_verify(args, console: Console) -> int:
     if not plan and not args.quiet:
         console.print("[yellow]nothing to verify[/] (see `larch scan` for candidates)")
     configs: dict[Path, Config] = {}
+    by_label: dict = {}  # LARCH.md subject label -> its report (for system rules)
     for path, func in plan:
         lang = language_for(path)
         root = project_root(path)
@@ -75,6 +76,7 @@ def cmd_verify(args, console: Console) -> int:
                 return 3
             ui.final(report)
             reports.append(report)
+            by_label[func] = report
             fix = next((f.fix for f in report.findings if f.fix and f.fix.validated), None)
             if fix is not None and args.apply and getattr(fix, "file", None):
                 _maybe_apply(report, Path(fix.file), console, assume_yes=args.yes)
@@ -101,8 +103,16 @@ def cmd_verify(args, console: Console) -> int:
             return 3
         ui.final(report)
         reports.append(report)
+        if subject is not None:
+            by_label[subject.label] = report
         if report.findings and args.apply:
             _maybe_apply(report, path, console, assume_yes=args.yes)
+    md = getattr(args, "rules_from", None)
+    if md is not None and not args.k and args.changed is None and not args.limit:
+        rc = _verify_rules(md, by_label, configs, overrides, ui, console)
+        if rc is not None:
+            return rc
+        reports += _RULE_REPORTS
     if args.json:
         data = [r.to_json() for r in reports]
         Path(args.json).write_text(json.dumps(data if len(data) != 1 else data[0], indent=2, default=str))
@@ -137,6 +147,42 @@ def _subject_for(path: Path, func: str):
     return cf.for_function(path, func) if cf else None
 
 
+_RULE_REPORTS: list = []
+
+
+def _verify_rules(md: Path, by_label: dict, configs: dict, overrides: dict, ui, console: Console) -> int | None:
+    """`# System rules` in LARCH.md, after every component they use has been verified."""
+    from . import contracts as larchmd
+    from .engine.system_session import verify_rule
+    from .llm.base import UsageLimitError
+    from .util import project_root
+
+    cf = _CONTRACT_FILES.get(md) or larchmd.load(md)
+    _RULE_REPORTS.clear()
+    for k, rule in enumerate(cf.rules, 1):
+        used, missing = [], []
+        for label in rule.uses:
+            subj = cf.subject(label)
+            if subj is None or subj.label not in by_label:
+                missing.append(label)
+            else:
+                used.append((subj, by_label[subj.label]))
+        if missing or not rule.uses:
+            why = f"unknown or unverified: {', '.join(missing)}" if missing else "it names no components; end it with `(uses: A, B)`"
+            console.print(f"[yellow]skipping system rule {k}[/] ({rule.text[:60]}): {why}")
+            continue
+        root = project_root(md)
+        cfg = configs.get(root) or Config.load(md.parent, **overrides)
+        try:
+            report = verify_rule(rule, k, md, used, cfg, ui)
+        except UsageLimitError as e:
+            console.print(f"[red]✗ {e}.[/] Re-run after the reset.")
+            return 3
+        ui.final(report)
+        _RULE_REPORTS.append(report)
+    return None
+
+
 def _service_subject(md: Path, label: str):
     from . import contracts as larchmd
 
@@ -169,6 +215,7 @@ def _plan_targets(args, console: Console) -> list[tuple[Path, str]] | None:
             except larchmd.ContractsError as e:
                 console.print(f"[red]error:[/] {e}")
                 return None
+            args.rules_from = md
             for subj in cf.subjects:
                 if subj.kind == "service":
                     plan.append((md, subj.label))
@@ -283,7 +330,7 @@ def _summary_table(reports, console: Console) -> None:
     from rich.table import Table
 
     t = Table(title="Summary", show_lines=False)
-    for col in ("function", "verdict", "proved", "tests", "mutation", "cost", "time"):
+    for col in ("subject", "verdict", "proved", "tests", "mutation", "cost", "time"):
         t.add_column(col)
     for r in reports:
         m = r.mutation

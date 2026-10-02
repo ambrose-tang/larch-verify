@@ -22,9 +22,36 @@
   object is tested with random and bounded-exhaustive call sequences, comparing results
   and observers after every call; failures shrink to the shortest sequence. Mutation
   analysis and validated fixes cover classes too. Python and TypeScript/JavaScript.
+- **Services**: `## service NAME` in LARCH.md verifies a running HTTP service. Larch
+  starts a throwaway database (Postgres via Docker or local binaries, SQLite, none, or a
+  URL), starts the service, reads its OpenAPI description and route source, and models
+  it as a state machine whose operations are endpoints (status code plus selected
+  response fields). Request sequences are compared with the model after a database
+  reset; ids are deterministic. Mutants and fixes run on a copy of the project on its
+  own port. `larch verify "service orders"` or `larch verify` with no arguments.
+- **System rules**: bullets under `# System rules` with `(uses: A, B)` are stated in Lean
+  over the composed component models and proved from the components' contracts
+  (assume–guarantee). The report lists the contracts the rule rests on and their status.
+- **Coverage-guided sequences**: half of the call/request sequences are grown from the
+  ones that reach the rarest model behaviour, so deep states are tested routinely.
+  Failing sequences shrink by greedy call deletion as well as by Hypothesis.
+- **Model revision for classes and services**: a disagreement adjudicated as a model
+  bug revises the model and re-tests, as for functions.
+- **Several bugs in one class or service are reported separately**: disagreements are
+  grouped by the failing operation and the outcomes on each side, and each group gets
+  its own shrunk sequence. A fix is accepted when the disagreements it targets are gone
+  and every remaining one also occurs, identically, in the original code.
 - `larch scan` lists classes as candidates (exception classes excluded).
 - `examples/shop`: a storefront backend (shipping rates, discounts, pay-in-N split in
-  TypeScript) with a LARCH.md and realistic seeded bugs.
+  TypeScript, a store-credit ledger, a cart, and a FastAPI + Postgres orders service)
+  with a LARCH.md, system rules and realistic seeded bugs.
+
+### Fixed
+- Model results a JavaScript runtime cannot represent exactly (beyond 2^53) are outside
+  the compared domain instead of reported as disagreements.
+- Formalization errors in reports show the Lean error, not only its heading.
+- A mutant or fix of a service that fails to start no longer stops the database the
+  other runs share (which made later mutants look detected).
 
 ## 0.2.0
 

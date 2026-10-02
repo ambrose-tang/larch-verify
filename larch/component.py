@@ -187,6 +187,12 @@ class ComponentSpec:
             _check_type(o.returns, f"{o.method} result", problems)
             if not re.search(rf"\bdef\s+op_{re.escape(o.method)}\b", self.model_code):
                 problems.append(f"the model must define `def op_{o.method} (s : State) ... : Option (State × {o.returns})`")
+            else:
+                got = def_param_names(self.model_code, f"op_{o.method}")
+                want = [p.name for p in o.params]
+                if got is not None and got[1:] != want and len(got) > 1:
+                    problems.append(f"`def op_{o.method}` takes ({', '.join(got[1:])}) after the state, but the operation lists its "
+                                    f"parameters as ({', '.join(want)}): use the same names in the same order")
         for ob in self.observers:
             _check_type(ob.lean_type, f"observer {ob.name}", problems)
             if not re.search(rf"\bdef\s+obs_{re.escape(ob.name)}\b", self.model_code):
@@ -424,3 +430,16 @@ end LarchHarness
 def main : IO Unit := do
   LarchHarness.loop (← IO.getStdin) (← IO.getStdout)
 """
+
+
+_BINDER = re.compile(r"\(\s*([A-Za-z_][\w']*(?:\s+[A-Za-z_][\w']*)*)\s*:(?!=)")
+
+
+def def_param_names(model_code: str, name: str) -> list[str] | None:
+    """Explicit parameter names of `def NAME (a : T) (b c : U) ... :=`, in order (None
+    when the definition is not found or is not written with named binders)."""
+    m = re.search(rf"\bdef\s+{re.escape(name)}\b(.*?):=", model_code, re.S)
+    if not m:
+        return None
+    names = [n for g in _BINDER.findall(m.group(1)) for n in g.split()]
+    return names or None

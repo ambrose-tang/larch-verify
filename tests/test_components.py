@@ -99,7 +99,8 @@ def formalization() -> dict:
             {"method": "balance", "params": [p("account", "String")], "returns": "Int"},
             {"method": "total", "params": [], "returns": "Int"},
         ],
-        "observers": [{"name": "total", "lean_type": "Int", "access": "call"}],
+        # Deliberately wrong access: Larch reads it from the class (`total` is a method).
+        "observers": [{"name": "total", "lean_type": "Int", "access": "attribute"}],
         "model": MODEL,
         "invariants": [],
         "operation_contracts": [
@@ -238,3 +239,68 @@ def test_typescript_class_adapter(tmp_path):
         assert c.new([3])["status"] == "ok"
         assert c.invoke("bump", [], 1.0)["value"] == 3
         assert c.observe([{"name": "value", "access": "attribute"}], 1.0)["observers"]["value"]["value"] == 3
+
+
+def test_shrink_case_removes_irrelevant_calls():
+    from larch.engine.seqdriver import shrink_case
+
+    case = ((), [("deposit", ("a", 1)), ("balance", ("b",)), ("withdraw", ("a", 5)), ("total", ()), ("transfer", ("a", "a", 1))])
+    fails = lambda c: any(m == "transfer" for m, _ in c[1]) and any(m == "deposit" for m, _ in c[1])  # noqa: E731
+    assert shrink_case(case, fails, 100) == ((), [("deposit", ("a", 1)), ("transfer", ("a", "a", 1))])
+
+
+@needs_lean
+def test_wrong_model_is_revised_not_reported(tmp_path):
+    """The formalizer gets withdraw wrong (allows overdrafts); the reviewer blames the
+    model; Larch revises it and re-tests instead of reporting a bug in correct code."""
+    from larch.engine.component_session import verify_component
+    from larch.llm.base import LLM, Ledger
+    from larch.llm.providers import FakeProvider
+
+    wrong = MODEL.replace("if amount ≤ 0 ∨ bal s.balances account < amount then none", "if amount ≤ 0 then none")
+
+    def respond(req):
+        if req.stage == "formalize":
+            d = formalization()
+            d["model"] = wrong
+            d["operation_contracts"] = [dict(d["operation_contracts"][1], contract=0)]  # one the wrong model meets
+            return d
+        if req.stage == "adjudicate":
+            return {"verdict": "model_bug", "explanation": "the documented Ledger refuses overdrafts"}
+        if req.stage == "model-repair":
+            return {"model": MODEL, "explanation": "withdraw now refuses amounts above the balance"}
+        return "```lean\n-- nothing\n```"
+
+    f, subject = _subject(tmp_path, LEDGER_OK)
+    subject.contracts = subject.contracts[1:]
+    cfg = _cfg(tmp_path)
+    cfg.run_mutation = False
+    report = verify_component(f, "Ledger", cfg, llm=LLM(FakeProvider(respond), Ledger()), subject=subject)
+    assert report.model_revisions == ["withdraw now refuses amounts above the balance"]
+    assert report.verdict in ("passed", "partial") and not report.findings, (report.headline, report.warnings)
+    assert report.drt["disagreements"] == 0
+
+
+@needs_lean
+def test_unfaithful_contract_reading_is_sent_back(tmp_path):
+    from larch.engine.component_session import verify_component
+    from larch.llm.base import LLM, Ledger
+    from larch.llm.providers import FakeProvider
+
+    stages = []
+
+    def respond(req):
+        stages.append(req.stage)
+        if req.stage == "formalize":
+            return formalization()
+        if req.stage == "fidelity":
+            first = stages.count("fidelity") == 1
+            return {"items": [{"index": 0, "faithful": not first, "problem": "adds 'only for account a'" if first else ""}]}
+        return "```lean\n-- nothing\n```"
+
+    f, subject = _subject(tmp_path, LEDGER_OK)
+    cfg = _cfg(tmp_path)
+    cfg.run_mutation = cfg.run_proofs = False
+    report = verify_component(f, "Ledger", cfg, llm=LLM(FakeProvider(respond), Ledger()), subject=subject)
+    assert stages[:4] == ["formalize", "fidelity", "formalize", "fidelity"]
+    assert not any("mistranslation" in w for w in report.warnings)

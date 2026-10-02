@@ -12,6 +12,7 @@ from __future__ import annotations
 import itertools
 import json
 import random
+import re
 import time
 import warnings
 
@@ -58,6 +59,16 @@ def _http_ok(value, where: str) -> bool:
     if isinstance(value, (list, tuple)):
         return all(_http_ok(v, "body") for v in value)
     return True
+
+
+def _coarse(text, is_service: bool) -> str:
+    """The class of an outcome, for telling distinct bugs apart: the status code for a
+    service; raised / returned for a class."""
+    t = str(text)
+    if is_service:
+        m = re.search(r"\b([1-5]\d\d)\b", t)
+        return m.group(1) if m else t[:20]
+    return "raises" if t.startswith(("raise", "raised")) else "returns"
 
 
 def _call_repr(var: str, method: str, args: list) -> str:
@@ -239,8 +250,11 @@ class Component:
         return flat
 
     def _div(self, kind, lines, impl, model, detail: str = "", steps_done: int = 0) -> dict:
+        last = lines[-1] if lines else ""
+        method = last.split("(", 1)[0].rsplit(".", 1)[-1]
         return {"kind": kind, "args_repr": "\n".join(lines), "impl": impl, "model": model, "detail": detail,
-                "length": len(lines) - 1, "impl_violates": []}
+                "length": len(lines) - 1, "impl_violates": [],
+                "group": f"{kind}:{method}:{_coarse(impl, bool(self.wheres))}:{_coarse(model, bool(self.wheres))}"}
 
 
 # ---------------------------------------------------------------------------
@@ -276,11 +290,24 @@ def case_strategy(job: dict, comp: Component):
     init = norm(custom["init"]) if "init" in custom else typed(comp.init_types)
     calls = []
     for m, (types, _ret) in comp.ops.items():
-        args = st.one_of(norm(custom[m]), typed(types)) if m in custom else typed(types)
+        if m in custom:
+            # Mostly the formalizer's values: calls only interact (the same account, order or
+            # key) when their arguments come from shared small pools. Some type-directed
+            # values keep the unexpected inputs in play.
+            c, t = norm(custom[m]), typed(types)
+            if m in comp.wheres:
+                t = t.filter(lambda a, w=comp.wheres[m]: all(_http_ok(x, k) for x, k in zip(a, w)))
+            args = st.integers(0, 9).flatmap(lambda i, c=c, t=t: t if i == 0 else c)
+        else:
+            args = typed(types)
+            if m in comp.wheres:
+                args = args.filter(lambda a, w=comp.wheres[m]: all(_http_ok(x, k) for x, k in zip(a, w)))
         calls.append(st.tuples(st.just(m), args))
     step = st.one_of(*calls) if calls else st.nothing()
     max_steps = int(job.get("max_steps", 10))
-    return st.tuples(init, st.lists(step, max_size=max_steps)), note
+    # Half the sequences are long: bugs in stateful code often need several calls to set up.
+    seqs = st.one_of(st.lists(step, max_size=max_steps), st.lists(step, min_size=max(1, max_steps // 2), max_size=max_steps))
+    return st.tuples(init, seqs), note
 
 
 def exhaustive_cases(job: dict, comp: Component, limit: int) -> tuple[list, int] | None:
@@ -345,6 +372,112 @@ DIVERGENT = ("value", "crash", "timeout", "type")
 
 
 # ---------------------------------------------------------------------------
+# Coverage-guided generation
+# ---------------------------------------------------------------------------
+
+def _outcome(value, is_service: bool):
+    """A coarse class of one step's result in the model: the HTTP status for a service;
+    for a class, raised / a boolean / a small integer / anything else."""
+    if isinstance(value, dict) and "error" in value:
+        return "raises"
+    v = value.get("ok") if isinstance(value, dict) else None
+    if is_service and isinstance(v, list) and v and isinstance(v[0], int):
+        return v[0]
+    if is_service and isinstance(v, int) and not isinstance(v, bool):
+        return v
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, int):
+        return max(-2, min(2, v))
+    return "ok"
+
+
+def features(comp: Component, case) -> set:
+    """What a sequence exercises, according to the model: each step's (operation, outcome)
+    and each run of two and three consecutive ones. Empty if the case is outside the domain."""
+    enc = comp.encode_case(case)
+    if enc is None:
+        return set()
+    try:
+        m = comp.model(enc)
+    except (HarnessError, HarnessTimeout):
+        return set()
+    if "error" in m or not m.get("pre"):
+        return set()
+    is_service = bool(comp.wheres)
+    out, prev2, prev = set(), ("init",), ("init",)
+    for (meth, _), st_ in zip(case[1], m.get("steps") or []):
+        cur = (meth, _outcome(st_, is_service))
+        out.update((cur, (prev, cur), (prev2, prev, cur)))
+        prev2, prev = prev, cur
+    return out
+
+
+def guided_cases(comp: Component, strategy, n: int, seed: int, max_steps: int, *, budget_factor: int = 10,
+                 deadline: float | None = None) -> list:
+    """Half random sequences; the other half grown, by appending or replacing steps, from
+    the sequences that reached the rarest model behaviour (operation outcomes and runs of
+    them), then chosen by that rarity. Deep states (an order paid, then paid again) are
+    reached in a few generations instead of by chance. Only the model runs here, which is
+    cheap; the implementation runs on the chosen cases."""
+    rng = random.Random(seed)
+    base = collect(strategy, max(1, n // 2), seed)
+    pool = [step for c in base for step in c[1]]
+    if not pool or n - len(base) <= 0:
+        return base
+    count: dict = {}
+    corpus: list[tuple[tuple, frozenset]] = []
+
+    def add(case, f) -> bool:
+        novel = any(x not in count for x in f)
+        for x in f:
+            count[x] = count.get(x, 0) + 1
+        if novel:
+            corpus.append((case, frozenset(f)))
+        return novel
+
+    def rarity(f) -> float:
+        return sum(1.0 / count[x] for x in f)
+
+    for c in base:
+        add(c, features(comp, c))
+    for evals in range(n * budget_factor):
+        if not corpus or (deadline is not None and time.monotonic() > deadline):
+            break
+        if evals % 50 == 0:
+            weights = [rarity(f) + 1e-9 for _, f in corpus]
+        parent = rng.choices(corpus[: len(weights)], weights=weights)[0][0]
+        init, steps = parent[0], list(parent[1])
+        for _ in range(rng.randint(1, 3)):
+            if len(steps) < max_steps and rng.random() < 0.8:
+                steps.append(rng.choice(pool))
+            elif steps:
+                steps[rng.randrange(len(steps))] = rng.choice(pool)
+        cand = (init, steps)
+        add(cand, features(comp, cand))
+    base_ids = {id(c) for c in base}
+    grown = sorted((cf for cf in corpus if id(cf[0]) not in base_ids), key=lambda cf: -rarity(cf[1]))
+    return base + [c for c, _ in grown[: n - len(base)]]
+
+
+def shrink_case(case, fails, budget: int):
+    """Greedy step deletion on a concrete failing case: the shortest sequence (by removing
+    whole calls) that still fails the same way."""
+    init, steps = case[0], list(case[1])
+    tries, changed = 0, True
+    while changed and tries < budget:
+        changed = False
+        for i in range(len(steps) - 1, -1, -1):
+            if tries >= budget:
+                break
+            cand = steps[:i] + steps[i + 1:]
+            tries += 1
+            if fails((init, cand)):
+                steps, changed = cand, True
+    return (init, steps)
+
+
+# ---------------------------------------------------------------------------
 # Jobs
 # ---------------------------------------------------------------------------
 
@@ -363,10 +496,15 @@ def job_seq(job: dict, harness: HarnessClient, impl) -> dict:
         if ex is None:
             return {"ok": False, "error": "no finite domains for exhaustive sequence testing"}
         cases, depth = ex
-    else:
+    elif job.get("cases") is not None:  # replay given cases (e.g. a fix's failures, on the original code)
+        cases = [(tuple(i), [(m, tuple(a)) for m, a in steps]) for i, steps in job["cases"]]
+    elif model_only or not job.get("guided", True):
         cases = collect(strategy, int(job.get("max_examples", 300)), seed)
+    else:
+        cases = guided_cases(comp, strategy, int(job.get("max_examples", 300)), seed, int(job.get("max_steps", 10)),
+                             deadline=t0 + float(job.get("time_budget", 600)) / 3)
     counts: dict[str, int] = {}
-    failures, model_violations = [], []
+    failures, model_violations, failing_cases = [], [], []
     deadline = t0 + float(job.get("time_budget", 600))
     total_steps = 0
     stopped = None
@@ -378,7 +516,9 @@ def job_seq(job: dict, harness: HarnessClient, impl) -> dict:
         if k == "model_violation" and len(model_violations) < 10:
             model_violations.append(rec)
         if k in DIVERGENT and len(failures) < 25:
+            rec["case"] = [list(case[0]), [[m, list(a)] for m, a in case[1]]]
             failures.append(rec)
+            failing_cases.append(case)
         if time.monotonic() > deadline:
             stopped = "time budget exhausted"
             break
@@ -391,11 +531,30 @@ def job_seq(job: dict, harness: HarnessClient, impl) -> dict:
         def fails(c):
             return comp.evaluate(c)["kind"] == kind
 
-        small = shrink(strategy, fails, int(job.get("shrink_budget", 200)), seed)
-        if small is not None:
-            r = comp.evaluate(small)
+        budget = int(job.get("shrink_budget", 200))
+        same = [c for c, r in zip(failing_cases, failures) if r["kind"] == kind]
+        best = shrink_case(min(same, key=lambda c: len(c[1])), fails, budget // 2)
+        small = shrink(strategy, fails, budget // 2, seed)
+        if small is not None and len(small[1]) < len(best[1]):
+            best = small
+        r = comp.evaluate(best)
+        if r["kind"] in DIVERGENT:
             r["shrunk"] = True
             result["minimal"] = r
+        else:  # not reproducible (e.g. a flaky service): report the shortest observed failure
+            result["minimal"] = dict(min(failures, key=lambda r: r.get("length", 99)), shrunk=False)
+        # One shrunk example per other kind of disagreement (another operation, other outcomes):
+        # several bugs in one class or service are reported separately.
+        minimals, groups = [result["minimal"]], {result["minimal"].get("group")}
+        for c, rec in sorted(zip(failing_cases, failures), key=lambda cr: len(cr[0][1])):
+            g = rec.get("group")
+            if g in groups or len(minimals) >= 3 or time.monotonic() > deadline:
+                continue
+            groups.add(g)
+            small = shrink_case(c, lambda x, g=g: comp.evaluate(x).get("group") == g, budget // 4)
+            r = comp.evaluate(small)
+            minimals.append(dict(r, shrunk=True) if r.get("group") == g else rec)
+        result["minimals"] = minimals
     elif failures:
         result["minimal"] = dict(min(failures, key=lambda r: r.get("length", 99)), shrunk=True)
     if model_violations and job.get("shrink", True):

@@ -283,6 +283,8 @@ class RichUI(UI):
             if f.fix:
                 title = "Proposed fix" + (" · validated against the verified model" if f.fix.validated else " · not validated")
                 self.c.print(Padding(Text(title, style="bold"), (0, 0, 0, 1)))
+                if f.fix.validated and f.fix.validation and "other disagreement" in f.fix.validation:
+                    self.c.print(Padding(Text(f.fix.validation, style="dim"), (0, 0, 0, 3)))
                 self.c.print(Padding(Syntax(f.fix.diff, "diff", theme="ansi_dark", background_color="default"), (0, 0, 0, 3)))
                 if f.fix.patch_path:
                     self.c.print(Text(f"   saved to {f.fix.patch_path}", style="dim"))
