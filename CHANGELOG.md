@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Added
+- **`larch`** (no arguments): an interactive session that drafts LARCH.md with you by
+  asking about intent and confirming proposed contracts (with multiple-choice answers
+  where they fit), then verifies on request. Every LARCH.md version is kept in
+  `.larch/history/` with `/undo` and `/rollback`. Failures produce
+  `.larch/what-to-fix.md`; a clean run produces `LARCH-CERTIFICATE.json` (contracts and
+  sources pinned by hash), which `larch certificate` re-checks.
 - **LARCH.md**: the project's contracts in plain English (optional exact Lean blocks),
   one file at the repository root. `larch verify` with no arguments checks everything
   in it; `larch init` drafts it from the best candidates of `larch scan`. Each bullet

@@ -399,6 +399,25 @@ same customer, pay it). Uniform random sequences reached a successful payment in
 of model evaluation, and the implementation, which is the expensive side, runs only on
 the chosen cases.
 
+## D24. The interactive session asks about intent and keeps the draft as its memory
+
+**Decision.** `larch` runs a short conversation whose only state is LARCH.md and the
+last few turns. Each turn is one structured LLM call (`say`, `choices`, `read`, `draft`,
+`change`, `ready`) on a compact repository summary; code is read only on request, and
+only the most recent code shown is kept in the prompt. Every draft is validated as
+LARCH.md before it is written, and every version is snapshotted to `.larch/history/`.
+The terminal UI is prompt_toolkit (input, history, bottom bar), questionary (choices)
+and rich (output), in a gold-and-bark palette so it does not read as an agent harness.
+A clean verification yields `LARCH-CERTIFICATE.json`: hashes of LARCH.md and each
+verified file, the proofs' methods and locations, the commit, and a digest.
+
+**Why.** Developers know what their code is for better than how to phrase a contract;
+proposing a contract and confirming it is faster and gets fewer mistranslations than
+asking for one. Keeping the draft as the memory bounds each turn (about 3k input
+tokens) however long the conversation runs. The certificate is tamper-evident, not
+signed: it proves which code and contracts the verification covered and detects any
+later change; trust in the result still rests on re-running `larch verify`.
+
 ## Eval-driven decisions
 
 The data is in [EVALS.md](EVALS.md). Each choice below won a head-to-head comparison on

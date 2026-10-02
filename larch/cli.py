@@ -419,6 +419,26 @@ def cmd_init(args, console: Console) -> int:
     return 0
 
 
+def cmd_certificate(args, console: Console) -> int:
+    from .chat import check_certificate
+    from .util import repo_root
+
+    path = Path(args.path)
+    if not path.exists():
+        console.print(f"[red]no certificate at {path}[/] (run `larch` and verify to get one)")
+        return 3
+    cert = json.loads(path.read_text())
+    problems = check_certificate(repo_root(path.resolve().parent), cert)
+    if problems:
+        console.print("[red]✗ The certificate no longer matches the code:[/]\n" + "\n".join(f"  - {p}" for p in problems))
+        console.print("[dim]Run `larch` (or `larch verify`) again to re-verify.[/]")
+        return 1
+    n = len(cert.get("subjects", []))
+    console.print(f"[green]✓ Valid.[/] {n} subject(s) verified at commit {cert.get('commit', '')[:12] or '—'} on {cert.get('issued')}; "
+                  "LARCH.md and every verified file are unchanged.")
+    return 0
+
+
 def cmd_show(args, console: Console) -> int:
     from .engine.session import artifacts_root
     from rich.markdown import Markdown
@@ -578,6 +598,9 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--include-tests", action="store_true", help="include test files")
     sc.add_argument("--json", help="write all candidates (with skip reasons) as JSON")
 
+    sub.add_parser("chat", help="interactive: draft LARCH.md together, then verify (the same as plain `larch`)")
+    ce = sub.add_parser("certificate", help="check that LARCH-CERTIFICATE.json still matches the code")
+    ce.add_argument("path", nargs="?", default="LARCH-CERTIFICATE.json")
     ls = sub.add_parser("list", help="list the functions Larch can verify in a file")
     ls.add_argument("file")
     return p
@@ -587,9 +610,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     console = Console(highlight=False)
+    if args.cmd is None and sys.stdin.isatty() and sys.stdout.isatty():
+        from .chat import run
+
+        try:
+            return run(console=console)
+        except KeyboardInterrupt:
+            console.print("\n[dim]interrupted[/]")
+            return 130
     if args.cmd is None:
         console.print(
-            "[bold #d97757]✻ Larch[/] [dim]verification-guided development with Lean 4[/]\n\n"
+            "[bold #e3b341]▲ Larch[/] [dim]verification-guided development with Lean 4[/]\n\n"
+            "  [bold]larch[/]                                    interactive: draft LARCH.md together, then verify\n"
             "  [bold]larch verify[/] path/to/file.py::function   verify one function\n"
             "  [bold]larch verify[/] path/to/file.py             verify every public function in a file\n"
             "  [bold]larch scan[/] [repo]                         find the functions worth verifying in a repository\n"
@@ -612,6 +644,12 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_list(args, console)
         if args.cmd == "scan":
             return cmd_scan(args, console)
+        if args.cmd == "chat":
+            from .chat import run
+
+            return run(console=console)
+        if args.cmd == "certificate":
+            return cmd_certificate(args, console)
     except KeyboardInterrupt:
         console.print("\n[dim]interrupted[/]")
         return 130
