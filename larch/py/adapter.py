@@ -12,6 +12,10 @@ Protocol: one JSON object per line on the original stdin/stdout.
                                                 -> {"ok": true} | {"ok": false, "error", "error_type", "missing"?}
   {"op": "call", "args": [...], "timeout": 1.0} -> {"status": "ok", "value"} | {"status": "exception", "exc"}
                                                    | {"status": "timeout"}
+  {"op": "new", "args"}                         -> construct the loaded class (stateful components)
+  {"op": "invoke", "method", "args", "timeout"} -> like "call", on that instance
+  {"op": "observe", "observers": [{"name", "access": "attribute"|"call"}]}
+                                                -> {"status": "ok", "observers": {name: call-like result}}
 Values use the tagged JSON format documented in larch/wire.py.
 The user's code gets stdout/stderr redirected to a log file and stdin from /dev/null.
 """
@@ -137,33 +141,76 @@ class Adapter:
         self.n_loads += 1
         return {"ok": True}
 
-    def call(self, req):
-        if self.fn is None:
-            return {"status": "exception", "exc": "LarchError: no function loaded"}
-        try:
-            args = [from_wire(a) for a in req.get("args", [])]
-        except Exception as e:  # noqa: BLE001
-            return {"status": "exception", "exc": "LarchError: %s" % e}
-        timeout = float(req.get("timeout", 1.0))
+    def _run(self, thunk, timeout):
+        """Run user code with a timeout; return a protocol result."""
         use_alarm = hasattr(signal, "setitimer")
         try:
             if use_alarm:
                 signal.setitimer(signal.ITIMER_REAL, timeout)
             try:
-                value = self.fn(*args)
+                value = thunk()
             finally:
                 if use_alarm:
                     signal.setitimer(signal.ITIMER_REAL, 0)
         except CallTimeout:
-            return {"status": "timeout"}
+            return {"status": "timeout"}, None
         except RecursionError as e:
-            return {"status": "exception", "exc": ("RecursionError: %s" % e)[:300]}
+            return {"status": "exception", "exc": ("RecursionError: %s" % e)[:300]}, None
         except BaseException as e:  # noqa: BLE001 - user code may raise anything (even SystemExit)
-            return {"status": "exception", "exc": ("%s: %s" % (type(e).__name__, e))[:300]}
+            return {"status": "exception", "exc": ("%s: %s" % (type(e).__name__, e))[:300]}, None
         try:
-            return {"status": "ok", "value": to_wire(value)}
+            return {"status": "ok", "value": to_wire(value)}, value
         except RecursionError:
-            return {"status": "ok", "value": {"$repr": _repr(value), "$type": type(value).__name__}}
+            return {"status": "ok", "value": {"$repr": _repr(value), "$type": type(value).__name__}}, value
+
+    def _args(self, req):
+        return [from_wire(a) for a in req.get("args", [])]
+
+    def call(self, req):
+        if self.fn is None:
+            return {"status": "exception", "exc": "LarchError: no function loaded"}
+        try:
+            args = self._args(req)
+        except Exception as e:  # noqa: BLE001
+            return {"status": "exception", "exc": "LarchError: %s" % e}
+        return self._run(lambda: self.fn(*args), float(req.get("timeout", 1.0)))[0]
+
+    # -- objects (stateful components) ------------------------------------------------------
+    def new(self, req):
+        """Construct an instance of the loaded class (replacing any previous one)."""
+        self.obj = None
+        if self.fn is None:
+            return {"status": "exception", "exc": "LarchError: no class loaded"}
+        args = self._args(req)
+        res, value = self._run(lambda: self.fn(*args), float(req.get("timeout", 2.0)))
+        if res["status"] == "ok":
+            self.obj = value
+            return {"status": "ok"}
+        return res
+
+    def invoke(self, req):
+        obj = getattr(self, "obj", None)
+        if obj is None:
+            return {"status": "exception", "exc": "LarchError: no instance"}
+        try:
+            args = self._args(req)
+            method = getattr(obj, req["method"])
+        except Exception as e:  # noqa: BLE001
+            return {"status": "exception", "exc": "%s: %s" % (type(e).__name__, e)}
+        return self._run(lambda: method(*args), float(req.get("timeout", 1.0)))[0]
+
+    def observe(self, req):
+        """Read observers (attributes, properties, or zero-argument methods)."""
+        obj = getattr(self, "obj", None)
+        if obj is None:
+            return {"status": "exception", "exc": "LarchError: no instance"}
+        out = {}
+        timeout = float(req.get("timeout", 1.0))
+        for o in req.get("observers", []):
+            name, access = o["name"], o.get("access", "attribute")
+            thunk = (lambda n=name: getattr(obj, n)()) if access == "call" else (lambda n=name: getattr(obj, n))
+            out[name] = self._run(thunk, timeout)[0]
+        return {"status": "ok", "observers": out}
 
 
 def main():
@@ -182,7 +229,8 @@ def main():
         signal.signal(signal.SIGALRM, _on_alarm)
     sys.setrecursionlimit(max(sys.getrecursionlimit(), 3000))
     adapter = Adapter()
-    handlers = {"ping": adapter.ping, "load": adapter.load, "call": adapter.call}
+    handlers = {"ping": adapter.ping, "load": adapter.load, "call": adapter.call,
+                "new": adapter.new, "invoke": adapter.invoke, "observe": adapter.observe}
     for line in proto_in:
         line = line.strip()
         if not line:

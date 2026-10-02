@@ -57,6 +57,7 @@ def cmd_verify(args, console: Console) -> int:
     if not plan and not args.quiet:
         console.print("[yellow]nothing to verify[/] (see `larch scan` for candidates)")
     configs: dict[Path, Config] = {}
+    by_label: dict = {}  # LARCH.md subject label -> its report (for system rules)
     for path, func in plan:
         lang = language_for(path)
         root = project_root(path)
@@ -65,21 +66,53 @@ def cmd_verify(args, console: Console) -> int:
             configs[root].extra["fresh"] = bool(args.fresh)
             configs[root].extra["reuse"] = bool(args.reuse)
         cfg = configs[root]
+        if func.startswith("service "):
+            from .engine.service_session import verify_service
+
+            try:
+                report = verify_service(_service_subject(path, func), cfg, ui)
+            except UsageLimitError as e:
+                console.print(f"[red]✗ {e}.[/] Nothing was reported for {func}; re-run after the reset.")
+                return 3
+            ui.final(report)
+            reports.append(report)
+            by_label[func] = report
+            fix = next((f.fix for f in report.findings if f.fix and f.fix.validated), None)
+            if fix is not None and args.apply and getattr(fix, "file", None):
+                _maybe_apply(report, Path(fix.file), console, assume_yes=args.yes)
+            continue
+        from .contracts import _looks_like_class
+
+        is_class = _looks_like_class(path, func)
         try:
-            lang.extract(path, func)
+            (lang.extract_class if is_class else lang.extract)(path, func)
         except ExtractError as e:
             console.print(f"[yellow]skipping {path.name}::{func}:[/] {e}")
             continue
+        subject = _subject_for(path, func)
         try:
-            report = verify_function(path, func, cfg, ui)
+            if is_class:
+                from .engine.component_session import verify_component
+
+                report = verify_component(path, func, cfg, ui, subject=subject)
+            else:
+                report = verify_function(path, func, cfg, ui, subject=subject)
         except UsageLimitError as e:
             console.print(f"[red]✗ {e}.[/] Nothing was reported for {func}; re-run after the reset, "
                           "or set ANTHROPIC_API_KEY to use the API instead.")
             return 3
         ui.final(report)
         reports.append(report)
+        if subject is not None:
+            by_label[subject.label] = report
         if report.findings and args.apply:
             _maybe_apply(report, path, console, assume_yes=args.yes)
+    md = getattr(args, "rules_from", None)
+    if md is not None and not args.k and args.changed is None and not args.limit:
+        rc = _verify_rules(md, by_label, configs, overrides, ui, console)
+        if rc is not None:
+            return rc
+        reports += _RULE_REPORTS
     if args.json:
         data = [r.to_json() for r in reports]
         Path(args.json).write_text(json.dumps(data if len(data) != 1 else data[0], indent=2, default=str))
@@ -95,6 +128,69 @@ def cmd_verify(args, console: Console) -> int:
     return max(EXIT.get(r.verdict, 3) for r in reports)
 
 
+_CONTRACT_FILES: dict = {}
+
+
+def _subject_for(path: Path, func: str):
+    """The function's entry in LARCH.md, if it has one (its contracts become specs)."""
+    from . import contracts as larchmd
+
+    md = larchmd.find(path)
+    if md is None:
+        return None
+    if md not in _CONTRACT_FILES:
+        try:
+            _CONTRACT_FILES[md] = larchmd.load(md)
+        except larchmd.ContractsError:
+            _CONTRACT_FILES[md] = None
+    cf = _CONTRACT_FILES[md]
+    return cf.for_function(path, func) if cf else None
+
+
+_RULE_REPORTS: list = []
+
+
+def _verify_rules(md: Path, by_label: dict, configs: dict, overrides: dict, ui, console: Console) -> int | None:
+    """`# System rules` in LARCH.md, after every component they use has been verified."""
+    from . import contracts as larchmd
+    from .engine.system_session import verify_rule
+    from .llm.base import UsageLimitError
+    from .util import project_root
+
+    cf = _CONTRACT_FILES.get(md) or larchmd.load(md)
+    _RULE_REPORTS.clear()
+    for k, rule in enumerate(cf.rules, 1):
+        used, missing = [], []
+        for label in rule.uses:
+            subj = cf.subject(label)
+            if subj is None or subj.label not in by_label:
+                missing.append(label)
+            else:
+                used.append((subj, by_label[subj.label]))
+        if missing or not rule.uses:
+            why = f"unknown or unverified: {', '.join(missing)}" if missing else "it names no components; end it with `(uses: A, B)`"
+            console.print(f"[yellow]skipping system rule {k}[/] ({rule.text[:60]}): {why}")
+            continue
+        root = project_root(md)
+        cfg = configs.get(root) or Config.load(md.parent, **overrides)
+        try:
+            report = verify_rule(rule, k, md, used, cfg, ui)
+        except UsageLimitError as e:
+            console.print(f"[red]✗ {e}.[/] Re-run after the reset.")
+            return 3
+        ui.final(report)
+        _RULE_REPORTS.append(report)
+    return None
+
+
+def _service_subject(md: Path, label: str):
+    from . import contracts as larchmd
+
+    if md not in _CONTRACT_FILES:
+        _CONTRACT_FILES[md] = larchmd.load(md)
+    return _CONTRACT_FILES[md].subject(label)
+
+
 def _plan_targets(args, console: Console) -> list[tuple[Path, str]] | None:
     """(file, function) pairs to verify. Directories expand to the functions `larch scan`
     rates as ready; files to all their public functions; --changed keeps only functions
@@ -103,12 +199,48 @@ def _plan_targets(args, console: Console) -> list[tuple[Path, str]] | None:
     from .repo import changed_functions, default_base_ref, scan
     from .util import repo_root
 
-    targets = list(args.targets) or (["."] if args.changed is not None else [])
-    if not targets:
-        console.print("[red]error:[/] give a FILE, FILE::function or DIRECTORY (or --changed)")
-        return None
+    from . import contracts as larchmd
+
+    targets = list(args.targets)
     plan: list[tuple[Path, str]] = []
-    for target in targets:
+    if not targets:
+        md = larchmd.find(Path.cwd())
+        if md is None and args.changed is None:
+            console.print("[red]error:[/] no LARCH.md found. Give a FILE, FILE::function or DIRECTORY, "
+                          "or run `larch init` to write one.")
+            return None
+        if md is not None:
+            try:
+                cf = larchmd.load(md)
+            except larchmd.ContractsError as e:
+                console.print(f"[red]error:[/] {e}")
+                return None
+            args.rules_from = md
+            for subj in cf.subjects:
+                if subj.kind == "service":
+                    plan.append((md, subj.label))
+                    continue
+                if subj.path is None or not subj.path.exists():
+                    console.print(f"[red]error:[/] {md.name}:{subj.line}: {subj.target}: file not found")
+                    return None
+                plan.append((subj.path, subj.name))
+            targets = [str(md.parent)]
+        else:
+            targets = ["."]
+    from_md = bool(plan)
+    for target in ([] if from_md else targets):
+        if target.lower().startswith("service "):
+            md = larchmd.find(Path.cwd())
+            try:
+                subj = larchmd.load(md).subject(target) if md else None
+            except larchmd.ContractsError as e:
+                console.print(f"[red]error:[/] {e}")
+                return None
+            if subj is None or subj.kind != "service":
+                console.print(f"[red]error:[/] no `## {target}` in " + (str(md) if md else "a LARCH.md (none found)"))
+                return None
+            plan.append((md, subj.label))
+            continue
         path, funcs = _parse_target(target)
         if not path.exists():
             console.print(f"[red]error:[/] {path} does not exist")
@@ -137,7 +269,7 @@ def _plan_targets(args, console: Console) -> list[tuple[Path, str]] | None:
         root = repo_root(Path(targets[0].split("::")[0]))
         ref = args.changed or default_base_ref(root)
         try:
-            files = sorted({p for p, _ in plan})
+            files = sorted({p for p, f in plan if not f.startswith("service ")})
             cands = scan(files, include_tests=True, root=root)
             touched = {((root / c.file).resolve(), c.function) for c in changed_functions(cands, root, ref)}
         except ValueError as e:
@@ -153,6 +285,9 @@ def _plan_targets(args, console: Console) -> list[tuple[Path, str]] | None:
 
         kept = []
         for p, f in plan:
+            if f.startswith("service "):
+                kept.append((p, f))
+                continue
             try:
                 if load_approved(language_for(p).extract(p, f)) is not None:
                     kept.append((p, f))
@@ -195,7 +330,7 @@ def _summary_table(reports, console: Console) -> None:
     from rich.table import Table
 
     t = Table(title="Summary", show_lines=False)
-    for col in ("function", "verdict", "proved", "tests", "mutation", "cost", "time"):
+    for col in ("subject", "verdict", "proved", "tests", "mutation", "cost", "time"):
         t.add_column(col)
     for r in reports:
         m = r.mutation
@@ -268,6 +403,19 @@ def cmd_init(args, console: Console) -> int:
             "# model = \"claude-sonnet-5\"\n# tests = 2000\n# mutants = 40\n# budget_usd = 5.0\n"
         )
     console.print(f"[green]Initialized[/] {d}. Approved specs will be stored in {d / 'specs'} so they can be reviewed and committed.")
+    from . import contracts as larchmd
+    from .repo import scan
+
+    md = root / larchmd.FILENAME
+    if md.exists():
+        console.print(f"{md.name} already exists; left unchanged.")
+        return 0
+    ready = [c for c in scan([root], root=root) if c.status == "ready"]
+    targets = [c.target for c in ready[: args.top]]
+    md.write_text(larchmd.draft(root, targets))
+    console.print(f"[green]Wrote[/] {md} with the {len(targets)} most promising function(s) from `larch scan`.\n"
+                  "  Add contracts as bullets under each heading (plain English), or leave a heading empty and\n"
+                  "  Larch will propose contracts for you to approve. Then run [bold]larch verify[/].")
     return 0
 
 
@@ -316,7 +464,8 @@ def cmd_scan(args, console: Console) -> int:
     for c in ready:
         by_lang[c.language] = by_lang.get(c.language, 0) + 1
     langs = ", ".join(f"{n} {lang}" for lang, n in sorted(by_lang.items()))
-    console.print(f"[bold]{len(ready)} verifiable function(s)[/]" + (f" ({langs})" if langs else "")
+    n_cls = sum(1 for c in ready if c.kind == "component")
+    console.print(f"[bold]{len(ready)} verifiable target(s)[/]" + (f" ({langs}; {n_cls} classes)" if langs else "")
                   + f", {len(skipped)} skipped, under {root}")
     shown = ready if args.all else ready[: args.top]
     if shown:
@@ -367,7 +516,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd")
 
     v = sub.add_parser("verify", help="verify functions (FILE.py::func, or FILE.py for all public functions)")
-    v.add_argument("targets", nargs="*", help="FILE, FILE::function, or DIRECTORY (default with --changed: the repository)")
+    v.add_argument("targets", nargs="*", help="FILE, FILE::function, or DIRECTORY (default: everything in LARCH.md)")
     v.add_argument("-k", help="only functions whose name contains this substring")
     v.add_argument("--changed", nargs="?", const="", metavar="REF",
                    help="only functions changed since REF (default: merge base with the default branch)")
@@ -414,8 +563,9 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--install", action="store_true", help="install the pinned Lean toolchain with elan if missing")
     d.add_argument("--provider", choices=["auto", "anthropic", "bedrock", "vertex", "claude-code"])
 
-    i = sub.add_parser("init", help="store approved specs in this project (.larch/specs) so they can be committed")
+    i = sub.add_parser("init", help="set up .larch/ and draft LARCH.md (the project's contracts)")
     i.add_argument("dir", nargs="?", default=".")
+    i.add_argument("--top", type=int, default=8, help="how many candidate functions to list in the new LARCH.md")
 
     s = sub.add_parser("show", help="show the report of a previous run (default: latest)")
     s.add_argument("run", nargs="?")

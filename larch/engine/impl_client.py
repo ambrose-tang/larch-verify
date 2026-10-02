@@ -187,6 +187,34 @@ class ImplClient:
             resp["value"] = from_wire(resp.get("value"))
         return resp
 
+    # -- objects (stateful components) ----------------------------------------------------------
+    def _object_op(self, req: dict, timeout: float) -> dict:
+        try:
+            return self._rpc(req, timeout + 5.0)
+        except TimeoutError:
+            self._restart()  # the instance is gone with the process; the caller ends the sequence
+            return {"status": "timeout", "lost": True}
+        except EOFError:
+            code = self.proc.poll() if self.proc else None
+            self._restart()
+            return {"status": "exception", "exc": f"ProcessCrash: the interpreter exited (code {code})", "lost": True}
+
+    def new(self, args: list, timeout: float = 2.0) -> dict:
+        return self._object_op({"op": "new", "args": [to_wire(a) for a in args], "timeout": timeout}, timeout)
+
+    def invoke(self, method: str, args: list, timeout: float) -> dict:
+        resp = self._object_op({"op": "invoke", "method": method, "args": [to_wire(a) for a in args], "timeout": timeout}, timeout)
+        if resp.get("status") == "ok":
+            resp["value"] = from_wire(resp.get("value"))
+        return resp
+
+    def observe(self, observers: list[dict], timeout: float) -> dict:
+        resp = self._object_op({"op": "observe", "observers": observers, "timeout": timeout}, timeout * max(1, len(observers)))
+        for r in (resp.get("observers") or {}).values():
+            if r.get("status") == "ok":
+                r["value"] = from_wire(r.get("value"))
+        return resp
+
     def __enter__(self) -> "ImplClient":
         self.start()
         return self

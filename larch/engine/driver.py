@@ -26,7 +26,7 @@ from pathlib import Path
 
 from larch.engine.impl_client import ImplClient, LoadError, child_env
 from larch.lean.harness_client import HarnessClient, HarnessError, HarnessTimeout
-from larch.lean.types import EncodeError, decode, encode, parse_type, perturb, strategy_for
+from larch.lean.types import EncodeError, decode, encode, enumerate_domain, parse_type, perturb, strategy_for
 
 DIVERGENT = ("value", "crash", "timeout", "type")
 
@@ -63,6 +63,8 @@ def _ints_within(v, bound: int) -> bool:
         return -bound <= v <= bound
     if isinstance(v, (list, tuple)):
         return all(_ints_within(x, bound) for x in v)
+    if isinstance(v, dict):
+        return all(_ints_within(x, bound) for x in v.values())
     return True
 
 
@@ -126,6 +128,18 @@ class Evaluator:
         if impl_override is not None:
             req["impl"] = impl_override
         elif with_impl:
+            # Never run the code under test outside its precondition: such inputs are not
+            # part of its contract, and can be arbitrarily expensive (or harmful) to run.
+            try:
+                pre = self.harness.request({"op": "pre", "args": enc})
+            except HarnessTimeout:
+                return {"kind": "model_timeout", "args": args}
+            except HarnessError as e:
+                return {"kind": "harness_error", "error": str(e), "args": args}
+            if "error" in pre:
+                return {"kind": "harness_error", "error": pre["error"], "args": args}
+            if not pre.get("pre"):
+                return {"kind": "pre_false"}
             implres = self.fn.call(args, self.call_timeout)
             if implres["status"] == "ok":
                 try:
@@ -145,6 +159,10 @@ class Evaluator:
             return {"kind": "harness_error", "error": resp["error"], "args": args}
         if not resp.get("pre"):
             return {"kind": "pre_false"}
+        if self.int_bound is not None and not _ints_within(resp["model"], int(self.int_bound)):
+            # The exact answer is not representable in the target runtime (e.g. a product
+            # beyond 2^53 in JavaScript): outside the domain it can be compared on.
+            return {"kind": "domain"}
         rec: dict = {
             "args": args,
             "args_repr": ", ".join(safe_repr(a) for a in args),
@@ -299,8 +317,15 @@ def job_drt(job: dict, harness: HarnessClient, impl: Impl | None = None) -> dict
     strategy, note = build_strategy(job, ev.params)
     seed = int(job.get("seed", 0))
     n = int(job.get("max_examples", 500))
-    edge = [list(e) for e in job.get("edge_cases", []) if isinstance(e, (list, tuple))]
-    inputs = _dedupe(edge + collect_inputs(strategy, n, seed))
+    exhaustive = bool(job.get("exhaustive"))
+    if exhaustive:
+        # Every input in the box, smallest first: the first failure is a minimal one.
+        inputs = enumerate_domain(ev.params, job.get("bounds") or [None] * len(ev.params), int(job.get("exhaustive_limit", 200_000)))
+        if inputs is None:
+            return {"ok": False, "error": "the input domain is not finite or exceeds the exhaustive limit"}
+    else:
+        edge = [list(e) for e in job.get("edge_cases", []) if isinstance(e, (list, tuple))]
+        inputs = _dedupe(edge + collect_inputs(strategy, n, seed))
     counts: dict[str, int] = {}
     failures: list[dict] = []
     model_violations: list[dict] = []
@@ -338,6 +363,7 @@ def job_drt(job: dict, harness: HarnessClient, impl: Impl | None = None) -> dict
 
     result: dict = {
         "ok": True,
+        "exhaustive": exhaustive,
         "counts": counts,
         "inputs": len(inputs),
         "strategy_note": note,
@@ -347,8 +373,10 @@ def job_drt(job: dict, harness: HarnessClient, impl: Impl | None = None) -> dict
         "slow_model_inputs": [", ".join(safe_repr(a) for a in x) for x in slow_models[:3]],
     }
 
+    if exhaustive and failures:
+        result["minimal"] = dict(failures[0], shrunk=True)  # smallest-magnitude failure
     # Minimal counterexamples (hypothesis shrinking) for the report.
-    if job.get("shrink", True) and time.monotonic() < deadline:
+    if job.get("shrink", True) and not exhaustive and time.monotonic() < deadline:
         budget = int(job.get("shrink_budget", 300))
         if failures and not model_only:
             first = failures[0]
@@ -407,6 +435,47 @@ def job_drt(job: dict, harness: HarnessClient, impl: Impl | None = None) -> dict
 
     result["elapsed"] = time.monotonic() - t0
     return result
+
+
+def job_witness(job: dict, harness: HarnessClient) -> dict:
+    """Evaluate postconditions on given (input, output) pairs, without the implementation.
+    Used to check that a formalized contract accepts and rejects what its English says."""
+    ev = Evaluator(job, harness, None)
+    out = []
+    for w in job.get("witnesses", []):
+        rec: dict = {"post": w.get("post")}
+        args = w.get("args")
+        enc_args = ev.encode_args(args)
+        if enc_args is None:
+            rec["error"] = "arguments do not fit the parameter types"
+            out.append(rec)
+            continue
+        output = w.get("output")
+        try:
+            if output == "raises":
+                if not ev.exceptions:
+                    raise EncodeError("the function is not modelled as raising")
+                override = {"error": "raises"}
+            else:
+                v = encode(output, ev.ret)
+                override = {"ok": v} if ev.exceptions else v
+        except EncodeError as e:
+            rec["error"] = f"output does not fit the return type: {e}"
+            out.append(rec)
+            continue
+        try:
+            resp = harness.request({"op": "case", "args": enc_args, "impl": override})
+        except HarnessError as e:
+            rec["error"] = str(e)
+            out.append(rec)
+            continue
+        if not resp.get("pre"):
+            rec["pre_false"] = True
+        else:
+            holds = dict(zip(ev.posts, resp.get("post_impl", [])))
+            rec["holds"] = holds.get(w.get("post"))
+        out.append(rec)
+    return {"ok": True, "witnesses": out}
 
 
 def job_probe(job: dict, harness: HarnessClient, impl: Impl | None = None) -> dict:
@@ -602,7 +671,12 @@ def main(argv: list[str]) -> int:
     sys.dont_write_bytecode = True
     h = job["harness"]
     harness = HarnessClient(h["cmd"], child_env(h["env"]), h["cwd"], timeout=float(h.get("timeout", 10.0)), stderr_path=job.get("log_path"))
-    impl = Impl(job) if job.get("impl") else None
+    if job.get("impl", {}).get("kind") == "http":
+        from larch.engine.http_impl import HttpImpl
+
+        impl = HttpImpl(job)
+    else:
+        impl = Impl(job) if job.get("impl") else None
     try:
         harness.start()
         kind = job["kind"]
@@ -616,6 +690,16 @@ def main(argv: list[str]) -> int:
             res = job_probe(job, harness, impl)
         elif kind == "examples":
             res = job_examples(job, harness, impl)
+        elif kind == "witness":
+            res = job_witness(job, harness)
+        elif kind == "seq":
+            from larch.engine.seqdriver import job_seq
+
+            res = job_seq(job, harness, impl)
+        elif kind == "seq_mutants":
+            from larch.engine.seqdriver import job_seq_mutants
+
+            res = job_seq_mutants(job, harness, impl, result_path)
         else:
             res = {"ok": False, "error": f"unknown job kind {kind}"}
     except LoadError as e:

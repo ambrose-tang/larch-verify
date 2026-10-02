@@ -297,6 +297,108 @@ own targets, stay within a budget, and report in the places reviewers already lo
 Purity and type checks are heuristics on the code (not the docs), so they err toward
 skipping; an explicit `FILE::function` always overrides them.
 
+## D18. Contracts live in one plain-English file: LARCH.md
+
+**Decision.** Developers state what code must do in `LARCH.md` at the repository root:
+`## path::name` headings with English bullets, optional ```` ```lean ```` blocks for exact
+statements, `include:` for monorepos. Each bullet becomes a mandatory spec (the
+formalizer must cover every one; it may add at most two of its own, labelled as such).
+The review shows the developer's words beside Larch's English reading of the Lean it
+wrote. Before review, each contract's Lean is evaluated on concrete outputs that the
+formalizer judged from the English alone; a disagreement is a repair round. Approved
+specs remember the bullets they were made from, so editing a bullet re-formalizes.
+Empty headings get proposed contracts, written back on interactive approval.
+
+**Why.** The riskiest step in the pipeline is the LLM deciding what the code is meant to
+do. A developer-written contract removes that guess, but adds a new risk: a
+mistranslated contract. Back-translation makes the meaning reviewable, and the
+witness check catches the common failures (an inequality the wrong way round, a bound
+off by one) mechanically. English keeps the file readable by everyone who reviews a
+pull request; Lean blocks are there for the few contracts that need exactness.
+
+## D19. Exhaustive testing with a proved-complete domain
+
+**Decision.** The formalizer reports integer ranges when the precondition bounds every
+input. Larch adds a property `input_domain : pre → each parameter in its range`, proves
+it like any spec, and, when the box holds at most `exhaustive_limit` inputs, runs every
+one (smallest magnitude first, so the first failure is a minimal counterexample)
+instead of random testing. With the domain proved complete, a postcondition evaluated
+on the implementation's output for every input holds for the code itself; such a
+function passes even if a postcondition's proof about the model is missing. Properties
+(relations between calls) still need their proofs.
+
+**Why.** Random testing finds bugs that fire on a few percent of inputs; it can miss a
+single bad input. Many business functions (rates by zone and weight, flags, small
+enums) have domains small enough to enumerate in seconds, and for them "checked on
+every input" is the strongest claim available about real code. The completeness proof
+is what makes "every input" true rather than "every input we thought of".
+
+## D20. Stateful components are state machines; tests are call sequences
+
+**Decision.** A class is modelled as `State`, `init : … → Option State`, one
+`op_m : State → … → Option (State × R)` per public method (`none` = raised, state
+unchanged), and `obs_*` observers. Larch generates `Reachable` (the constructor, then any
+operation) and states invariants as `∀ s, Reachable s → inv s` and operation contracts as
+`∀ s, Reachable s → ∀ args, post s args (op s args)`. Testing replays the same call
+sequence on the model (one harness request per sequence) and on a real instance (adapter
+`new`/`invoke`/`observe`), comparing the outcome and every observer after the constructor
+and after every call. Random sequences run alongside every sequence up to depth k over
+small argument pools that the formalizer proposes; k is the largest depth that fits the
+budget.
+
+**Why.** Reachability is the honest statement: an invariant need only hold in states
+the object can actually reach, and proving it by induction over `Reachable` is the
+standard technique (the prover may strengthen it internally). Observers after every
+call catch the most common class of stateful bug, a method that partially updates its
+state and then raises, which return values alone miss. Treating "raised" as "unchanged"
+in the model makes exactly that bug a disagreement. Bounded-exhaustive sequences
+(the "small scope hypothesis") find interaction bugs that random sequences reach rarely,
+at a predictable cost.
+
+## D21. A service is a state machine over HTTP, against a real throwaway database
+
+**Decision.** `## service NAME` names a command that starts the service on `{port}`.
+Larch starts the database itself (Docker or local Postgres run as an unprivileged user,
+SQLite, or an external URL), resets it between sequences with `TRUNCATE … RESTART
+IDENTITY`, and drives the service through the same `new`/`invoke`/`observe` interface as
+a class instance (`new` = reset). Each endpoint is an operation returning `Nat × Option
+T₁ × …`: the status and the response fields the formalizer selects. Parameters say where
+they travel (path, query, header, body), and only values HTTP can carry are generated.
+Mutants and fixes run on a copy of the project started on another port against the same
+database.
+
+**Why.** Mocks would test the developer's beliefs about the database, not the database;
+most service bugs (an idempotency check scoped to the wrong rows, a debit before a
+status check) live in the SQL. Resetting identities makes serial ids part of the
+compared behaviour instead of noise. Status plus selected fields is the contract a
+client sees; full bodies would couple the model to incidental fields.
+
+## D22. System rules are proved from component contracts (assume–guarantee)
+
+**Decision.** A rule names the components it uses. Their models are composed into one
+Lean module, each in its own namespace, and the rule is stated as
+`contract₁ → … → contractₙ → P` over them, with the contracts chosen by the formalizer
+from those the components carry. The verdict depends on how each contract was
+established (proved, or only tested) and whether each component agrees with its model.
+
+**Why.** Composing models rather than re-testing everything end to end keeps each
+component's verification reusable and the rule's proof small. Stating the contracts as
+hypotheses makes the dependency explicit: if a contract is only tested, the report says
+the rule rests on a tested assumption, rather than overstating what was proved.
+
+## D23. Sequences are guided by the model's coverage
+
+**Decision.** Half of the sequences are random; the other half are grown from a corpus
+of sequences that reached new model behaviour (an operation's outcome class, and runs of
+two and three of them), choosing parents and final cases by rarity. Only the model runs
+during generation.
+
+**Why.** Interesting states need specific prefixes (deposit, create an order for the
+same customer, pay it). Uniform random sequences reached a successful payment in about
+1% of cases in the shop example; guided generation reaches it in 40% for a few seconds
+of model evaluation, and the implementation, which is the expensive side, runs only on
+the chosen cases.
+
 ## Eval-driven decisions
 
 The data is in [EVALS.md](EVALS.md). Each choice below won a head-to-head comparison on

@@ -110,7 +110,7 @@ def test_changed_functions(repo):
     (repo / "src" / "m.py").write_text(src)
     (repo / "web" / "new.ts").write_text("export function fresh(a: number): number { return a + 1; }\n")
     changed = {c.target for c in changed_functions(scan([repo]), repo, "HEAD")}
-    assert changed == {"src/m.py::K.static", "web/new.ts::fresh"}
+    assert changed == {"src/m.py::K.static", "src/m.py::K", "web/new.ts::fresh"}  # the class changed too
     with pytest.raises(ValueError):
         changed_functions(scan([repo]), repo, "no-such-ref")
 

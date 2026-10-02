@@ -8,8 +8,15 @@ from dataclasses import dataclass, field
 from ..lean.lint import lint_lean
 from ..util import unescape_code
 from ..llm.base import UsageLimitError, LLMRequest
-from ..prompts import FORMALIZE_EXAMPLES_ADDENDUM, FORMALIZE_REPAIR, dump, formalize_schema, formalize_system, formalize_user, render_previous
-from ..spec import FormalSpec, Param, Postcondition, Property, edge_cases_from_json, examples_from_json, harness_module, model_module
+from ..lean.types import parse_type
+from ..prompts import (
+    FORMALIZE_EXAMPLES_ADDENDUM, FORMALIZE_REPAIR, contracts_section, dump, formalize_schema, formalize_system,
+    formalize_user, render_previous,
+)
+from ..spec import (
+    DOMAIN_PROPERTY, FormalSpec, Param, Postcondition, Property, domain_property, edge_cases_from_json,
+    examples_from_json, harness_module, model_module,
+)
 from .context import RunContext
 from .testing import run_drt, run_examples, run_props
 
@@ -49,18 +56,58 @@ def spec_from_data(data: dict, ctx: RunContext) -> tuple[FormalSpec | None, list
         Param(name=p.lean_name, lean_type=str(rp.get("lean_type", "")).strip(), py_name=p.name)
         for p, rp in zip(info.params, raw_params)
     ]
-    posts = [
-        Postcondition(name=str(p.get("name", "")).strip(), english=str(p.get("english", "")).strip(), lean=unescape_code(str(p.get("lean", ""))).strip())
-        for p in data.get("postconditions") or []
-        if isinstance(p, dict)
-    ]
+    contracts = list(ctx.contracts)
+    covered: set[int] = set()
+
+    def _origin(item: dict, obj) -> None:
+        try:
+            k = int(item.get("contract", -1))
+        except (TypeError, ValueError):
+            k = -1
+        if 0 <= k < len(contracts):
+            covered.add(k)
+            obj.origin = "contract"
+            if hasattr(obj, "contract"):
+                obj.contract = contracts[k].text
+            if contracts[k].lean:  # the developer's exact statement wins
+                obj.lean = contracts[k].lean
+            obj._contract_index = k  # transient, for contract checks
+
+    posts = []
+    for p in data.get("postconditions") or []:
+        if not isinstance(p, dict):
+            continue
+        post = Postcondition(name=str(p.get("name", "")).strip(), english=str(p.get("english", "")).strip(), lean=unescape_code(str(p.get("lean", ""))).strip())
+        _origin(p, post)
+        posts.append(post)
     props = []
     for q in data.get("properties") or []:
         if not isinstance(q, dict):
             continue
         qps = [Param(name=str(x.get("name", "")), lean_type=str(x.get("lean_type", ""))) for x in q.get("params") or [] if isinstance(x, dict)]
-        props.append(Property(name=str(q.get("name", "")).strip(), english=str(q.get("english", "")).strip(), params=qps, lean=str(q.get("lean", "")).strip()))
+        prop = Property(name=str(q.get("name", "")).strip(), english=str(q.get("english", "")).strip(), params=qps, lean=str(q.get("lean", "")).strip())
+        _origin(q, prop)
+        props.append(prop)
+    props = [q for q in props if q.name != DOMAIN_PROPERTY]
     _normalize_names(posts, props)
+    for k, c in enumerate(contracts):
+        if k not in covered:
+            problems.append(f"the developer's contract {k} (\"{c.text}\") was not formalized: give it its own "
+                            f"postcondition or property with \"contract\": {k}")
+    checks = []
+    names_by_contract = {getattr(p, "_contract_index"): p.name for p in posts if hasattr(p, "_contract_index")}
+    for chk in data.get("contract_checks") or []:
+        if not isinstance(chk, dict):
+            continue
+        try:
+            k = int(chk.get("contract", -1))
+            args = json.loads(str(chk.get("args", "[]")))
+            out = str(chk.get("output", "")).strip()
+            output = "raises" if out in ("raises", '"raises"') else json.loads(out)
+        except (TypeError, ValueError):
+            continue
+        if k in names_by_contract and isinstance(args, list) and chk.get("expect") in ("violates", "satisfies"):
+            checks.append({"contract": k, "post": names_by_contract[k], "args": args, "output": output, "expect": chk["expect"]})
     pre = data.get("precondition") or {}
     spec = FormalSpec(
         function=info.name,
@@ -77,9 +124,42 @@ def spec_from_data(data: dict, ctx: RunContext) -> tuple[FormalSpec | None, list
         edge_cases=edge_cases_from_json(str(data.get("edge_cases", ""))),
         notes=str(data.get("notes", "")),
         examples=examples_from_json(str(data.get("documented_examples", ""))),
+        contracts=[c.text for c in contracts],
+        contract_checks=checks,
     )
     problems += spec.validate()
+    if not problems:
+        spec.input_bounds = _input_bounds(spec, data.get("input_bounds"), problems)
+        dom = domain_property(spec)
+        if dom is not None:
+            spec.properties.append(dom)
     return spec, problems
+
+
+def _input_bounds(spec: FormalSpec, raw, problems: list[str]) -> dict:
+    """Validated bounds, or {} when the domain is not (claimed to be) finite."""
+    if not isinstance(raw, list) or not raw:
+        return {}
+    types = {p.name: parse_type(p.lean_type) for p in spec.params}
+    out: dict = {}
+    for b in raw:
+        if not isinstance(b, dict):
+            continue
+        name, lo, hi = str(b.get("param", "")), b.get("lo"), b.get("hi")
+        t = types.get(name)
+        if t is None or not isinstance(lo, int) or not isinstance(hi, int) or lo > hi:
+            problems.append(f"input_bounds entry {b} is invalid (unknown parameter or lo > hi); use [] if unsure")
+            continue
+        base = t.args[0] if t.head == "Option" else t
+        if base.head not in ("Int", "Nat"):
+            problems.append(f"input_bounds: parameter {name} is not Int or Nat")
+            continue
+        out[name] = [max(lo, 0) if base.head == "Nat" else lo, hi]
+    # Bounds only help when every parameter becomes finite.
+    from ..lean.types import domain_size
+
+    size = domain_size([types[p.name] for p in spec.params], [out.get(p.name) for p in spec.params])
+    return out if size is not None else {}
 
 
 def _normalize_names(posts: list, props: list) -> None:
@@ -159,7 +239,30 @@ def build_lean(ctx: RunContext, spec: FormalSpec) -> list[str]:
     return problems
 
 
-def sanity_check(ctx: RunContext, spec: FormalSpec) -> tuple[list[str], Sanity]:
+def check_contracts(ctx: RunContext, spec: FormalSpec) -> list[str]:
+    """Do the formalized contracts accept and reject what their English says? Each check
+    was judged from the English alone; a disagreement means the Lean says something else."""
+    if not spec.contract_checks:
+        return []
+    from .testing import run_witnesses
+
+    out = []
+    for w in run_witnesses(ctx, spec, spec.contract_checks):
+        if "error" in w or w.get("pre_false") or w.get("holds") is None:
+            continue
+        ok = w["holds"] if w["expect"] == "satisfies" else not w["holds"]
+        if not ok:
+            k = w["contract"]
+            verb = "rejects" if w["expect"] == "satisfies" else "accepts"
+            out.append(
+                f"Contract {k} (\"{ctx.contracts[k].text}\"): your Lean for `{w['post']}` {verb} the result "
+                f"{json.dumps(w['output'])} for input {json.dumps(w['args'])}, but by the English it should "
+                f"{'satisfy' if w['expect'] == 'satisfies' else 'violate'} the contract. Fix the Lean (or the check, if the check is wrong)."
+            )
+    return out
+
+
+def sanity_check(ctx: RunContext, spec: FormalSpec, *, strict_contracts: bool = True) -> tuple[list[str], Sanity]:
     """Cheap testing before approval: does the model satisfy its own specs? Does the
     generator produce valid inputs? (No LLM calls.) Generator-only problems are
     returned in `san.warnings` (fixed by a cheap targeted repair, never blocking)."""
@@ -219,6 +322,12 @@ def sanity_check(ctx: RunContext, spec: FormalSpec) -> tuple[list[str], Sanity]:
                 problems.append(f"Property `{name}` is false for the model: counterexample ({r.get('counterexample')}).")
             elif r.get("tested", 0) == 0:
                 problems.append(f"Property `{name}` could not be evaluated on any generated input (check its parameter types)")
+    if not problems and ctx.contracts:
+        mismatches = check_contracts(ctx, spec)
+        if strict_contracts:
+            problems += mismatches
+        else:
+            san.warnings += [f"the formalization may not match the contract: {m}" for m in mismatches]
     if problems:
         return problems, san
     # Informational: does the implementation already disagree? (Shown during review.)
@@ -316,6 +425,8 @@ def effective_mode(ctx: RunContext) -> str:
 def formalize(ctx: RunContext, *, feedback: str | None = None, previous: FormalSpec | None = None, step=None) -> tuple[FormalSpec, Sanity, int]:
     cfg = ctx.cfg
     base_prompt = formalize_user(ctx.info, effective_mode(ctx))
+    if ctx.contracts:
+        base_prompt += contracts_section(ctx.contracts)
     prompt = base_prompt
     if feedback and previous is not None:
         prompt += (
@@ -333,7 +444,7 @@ def formalize(ctx: RunContext, *, feedback: str | None = None, previous: FormalS
         resp = ctx.ask(LLMRequest(
             system=formalize_system(ctx.lang.type_guide) + (FORMALIZE_EXAMPLES_ADDENDUM if cfg.doc_examples else ""),
             prompt=prompt, model=cfg.model, stage="formalize",
-            effort=cfg.effort, json_schema=formalize_schema(cfg.doc_examples),
+            effort=cfg.effort, json_schema=formalize_schema(cfg.doc_examples, bool(ctx.contracts)),
         ))
         data = resp.data
         spec, problems = spec_from_data(data, ctx)
@@ -345,7 +456,7 @@ def formalize(ctx: RunContext, *, feedback: str | None = None, previous: FormalS
         if spec is not None and not problems:
             if step:
                 step.update("testing model against its specs")
-            problems, san = sanity_check(ctx, spec)
+            problems, san = sanity_check(ctx, spec, strict_contracts=attempt < cfg.formalize_repairs)
         if spec is not None and not problems:
             if san.warnings and ctx.cfg.test_strategy in ("llm", "mixed"):
                 if step:

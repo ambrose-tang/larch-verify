@@ -9,7 +9,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from ..lang import ExtractError, FunctionInfo, Language, Mutant, PyParam, Runtime, RuntimeEnvError
+from ..lang import ComponentInfo, ExtractError, FunctionInfo, Language, MethodInfo, Mutant, PyParam, Runtime, RuntimeEnvError
 from ..py.extract import splice_function as _splice_lines
 from ..spec import lean_binder
 from ..util import project_root, repo_root
@@ -131,6 +131,60 @@ class JavaScriptLanguage(Language):
     def splice_function(self, info: FunctionInfo, new_function_source: str) -> str:
         return _splice_lines(info, new_function_source)
 
+    def extract_class(self, path: Path, name: str) -> ComponentInfo:
+        path = Path(path)
+        mod = _module(path)
+        cd = next((c for c in mod.classes if c.name == name), None)
+        if cd is None:
+            raise ExtractError(f"class {name!r} not found in {path} (classes: {', '.join(c.name for c in mod.classes) or 'none'})")
+        ctor = next((m for m in cd.members if m.member == "constructor"), None)
+        if ctor is not None and any(p.rest or p.pattern for p in ctor.params):
+            raise ExtractError("constructors with rest or destructured parameters are not supported yet")
+        params = self._params(ctor) if ctor else []
+        methods, warnings = [], []
+        for m in cd.members:
+            short = m.member or ""
+            if m.is_static or short == "constructor" or short.startswith(("_", "#")) or m.kind == "setter":
+                continue
+            if m.is_async or m.is_generator or any(p.rest or p.pattern for p in m.params):
+                warnings.append(f"method {short} is async, a generator, or has rest/destructured parameters: not modelled")
+                continue
+            doc_params, doc_ret = jsdoc_types(m.jsdoc)
+            methods.append(MethodInfo(name=short, params=self._params(m), returns=m.returns or doc_ret, docstring=m.jsdoc,
+                                      kind="property" if m.kind == "getter" else "method"))
+        if not methods:
+            raise ExtractError(f"class {name} has no public methods to model")
+        src = mod.src
+        start_char = mod.all_toks[cd.jsdoc_tok].start if cd.jsdoc_tok is not None else mod.toks[cd.start_tok].start
+        end_char = mod.toks[cd.end_tok].end
+        line_start = src.rfind("\n", 0, start_char) + 1
+        line_end = src.find("\n", end_char)
+        info = ComponentInfo(
+            path=path.resolve(), name=name, source=src[line_start: len(src) if line_end == -1 else line_end], module_source=src,
+            lineno=src.count("\n", 0, start_char) + 1, end_lineno=src.count("\n", 0, end_char) + 1,
+            col_offset=start_char - line_start, params=params, returns=None, docstring=cd.jsdoc, language=self.name,
+            methods=methods, warnings=warnings,
+        )
+        info.context = "\n\n".join(mod.text(st.start, st.end) for st in mod.statements if st.is_import)
+        return info
+
+    def _params(self, decl) -> list[PyParam]:
+        doc_params, _ = jsdoc_types(decl.jsdoc)
+        out, used = [], set()
+        for p in decl.params:
+            ann = p.annotation or doc_params.get(p.name)
+            if p.optional and ann and "undefined" not in ann:
+                ann = f"{ann} | undefined"
+            lean_name = lean_binder(p.name)
+            while lean_name in used:
+                lean_name += "'"
+            used.add(lean_name)
+            out.append(PyParam(p.name, ann, lean_name, has_default=p.has_default))
+        return out
+
+    def generate_class_mutants(self, info, *, max_mutants: int = 40, seed: int = 0) -> list[Mutant]:
+        return generate_class_mutants(info, max_mutants=max_mutants, seed=seed)
+
     # -- runtime ----------------------------------------------------------------------------------
     def runtime(self, info: FunctionInfo, cfg) -> Runtime:
         node, why = _find_node(info.path, cfg.node)
@@ -148,7 +202,9 @@ class JavaScriptLanguage(Language):
         flags = _node_flags(node, typescript=self.name == "typescript")
         decl_params = [p for p in info.params]
         kinds = [_arg_kind(p.annotation) for p in decl_params]
-        bigint_only = all(k["bigint"] for k in kinds if k["numeric"]) and any(k["numeric"] for k in kinds)
+        method_kinds = {m.name: [_arg_kind(p.annotation) for p in m.params] for m in getattr(info, "methods", [])}
+        every = kinds + [k for ks in method_kinds.values() for k in ks]
+        bigint_only = all(k["bigint"] for k in every if k["numeric"]) and any(k["numeric"] for k in every)
         binding, _, member = info.name.partition(".")
         return Runtime(
             language=self.name,
@@ -158,7 +214,8 @@ class JavaScriptLanguage(Language):
             cmd=[node, *flags, str(ADAPTER)],
             env={},
             load={"path": str(info.path), "function": info.name, "binding": binding, "member": member or None,
-                  "arg_kinds": [{"bigint": k["bigint"], "undef": k["undef"]} for k in kinds]},
+                  "arg_kinds": [{"bigint": k["bigint"], "undef": k["undef"]} for k in kinds],
+                  "method_kinds": {m: [{"bigint": k["bigint"], "undef": k["undef"]} for k in ks] for m, ks in method_kinds.items()}},
             int_bound=None if bigint_only else SAFE_INT,
         )
 
@@ -405,15 +462,32 @@ def generate_mutants(info: FunctionInfo, *, max_mutants: int = 40, seed: int = 0
     decl = next((f for f in mod.functions if f.name == info.name), None)
     if decl is None:
         return []
+    return _pick(mod, _sites(info, mod, decl), decl.start_tok, decl.end_tok, decl.jsdoc_tok, max_mutants, seed)
+
+
+def generate_class_mutants(info: ComponentInfo, *, max_mutants: int = 40, seed: int = 0) -> list[Mutant]:
+    """Mutants of every method body of a class (signatures and types are left alone)."""
+    mod = Module(info.module_source)
+    cd = next((c for c in mod.classes if c.name == info.name), None)
+    if cd is None:
+        return []
+    sites = []
+    for m in cd.members:
+        if not m.is_static:
+            sites += _sites(info, mod, m)
+    return _pick(mod, sites, cd.start_tok, cd.end_tok, cd.jsdoc_tok, max_mutants, seed)
+
+
+def _pick(mod: Module, sites: list, start_tok: int, end_tok: int, jsdoc_tok, max_mutants: int, seed: int) -> list[Mutant]:
     src = mod.src
-    fn_start = src.rfind("\n", 0, mod.toks[decl.start_tok].start) + 1
-    if decl.jsdoc_tok is not None:
-        fn_start = src.rfind("\n", 0, mod.all_toks[decl.jsdoc_tok].start) + 1
-    fn_end = src.find("\n", mod.toks[decl.end_tok].end)
+    fn_start = src.rfind("\n", 0, mod.toks[start_tok].start) + 1
+    if jsdoc_tok is not None:
+        fn_start = src.rfind("\n", 0, mod.all_toks[jsdoc_tok].start) + 1
+    fn_end = src.find("\n", mod.toks[end_tok].end)
     fn_end = len(src) if fn_end == -1 else fn_end
     by_op: dict[str, list[Mutant]] = {}
     seen: set[str] = set()
-    for n, (op, desc, line, a, b, rep) in enumerate(_sites(info, mod, decl)):
+    for n, (op, desc, line, a, b, rep) in enumerate(sites):
         new_src = src[:a] + rep + src[b:]
         if new_src in seen:
             continue

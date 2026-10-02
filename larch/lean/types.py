@@ -149,7 +149,7 @@ def encode(value, t: LType):
             raise EncodeError("expected a single character")
         return value
     if h == "Unit":
-        return []
+        return {}  # Lean's ToJson Unit
     if h in ("List", "Array"):
         if isinstance(value, (str, bytes, dict, set, frozenset)) or not hasattr(value, "__iter__"):
             raise EncodeError(f"expected a sequence for {h}, got {type(value).__name__}")
@@ -320,3 +320,77 @@ def _sample_values(t: LType, rng) -> list:
         comps = [(_sample_values(c, rng) or [None])[0] for c in t.prod_components()]
         return [tuple(comps)]
     return []
+
+
+# ---------------------------------------------------------------------------
+# Finite domains (exhaustive testing)
+# ---------------------------------------------------------------------------
+
+def finite_values(t: LType, bound: tuple[int, int] | None = None, *, limit: int = 1_000_000) -> list | None:
+    """Every value of `t` (integers restricted to `bound`), or None if `t` is not
+    finite under that bound or has more than `limit` values."""
+    h = t.head
+    if h == "Bool":
+        return [False, True]
+    if h == "Unit":
+        return [None]
+    if h in ("Int", "Nat"):
+        if bound is None:
+            return None
+        lo, hi = int(bound[0]), int(bound[1])
+        if h == "Nat":
+            lo = max(lo, 0)
+        if hi < lo or hi - lo + 1 > limit:
+            return None
+        return list(range(lo, hi + 1))
+    if h == "Option":
+        inner = finite_values(t.args[0], bound, limit=limit - 1)
+        return None if inner is None else [None] + inner
+    if h == "Prod" and bound is None:
+        comps = [finite_values(c, None, limit=limit) for c in t.prod_components()]
+        if any(c is None for c in comps):
+            return None
+        size = 1
+        for c in comps:
+            size *= len(c)
+        if size > limit:
+            return None
+        import itertools
+
+        return [tuple(x) for x in itertools.product(*comps)]
+    return None
+
+
+def domain_size(types: list[LType], bounds: list) -> int | None:
+    """Number of argument tuples in the box, or None if some parameter is unbounded."""
+    size = 1
+    for t, b in zip(types, bounds):
+        vals = finite_values(t, tuple(b) if b else None)
+        if vals is None:
+            return None
+        size *= len(vals)
+    return size
+
+
+def enumerate_domain(types: list[LType], bounds: list, limit: int) -> list[list] | None:
+    """All argument tuples in the box, smallest magnitudes first (so the first failure
+    found is a small counterexample), or None if unbounded or larger than `limit`."""
+    import itertools
+
+    size = domain_size(types, bounds)
+    if size is None or size > limit:
+        return None
+    axes = [finite_values(t, tuple(b) if b else None) for t, b in zip(types, bounds)]
+
+    def mag(v) -> int:
+        if v is None or isinstance(v, bool):
+            return int(bool(v))
+        if isinstance(v, int):
+            return abs(v)
+        if isinstance(v, (list, tuple)):
+            return sum(mag(x) for x in v)
+        return 0
+
+    out = [list(x) for x in itertools.product(*axes)]
+    out.sort(key=lambda a: (sum(mag(x) for x in a), [mag(x) for x in a]))
+    return out

@@ -91,6 +91,8 @@ Requirements:
 ## Quick start
 
 ```bash
+larch init                                     # draft LARCH.md (your contracts) from the best candidates
+larch verify                                   # check everything in LARCH.md
 larch scan                                     # which functions in this repo can Larch verify? (ranked)
 larch verify src/pricing.py::apply_discount    # one function
 larch verify web/src/pagination.ts::pageCount  # TypeScript works the same way
@@ -103,11 +105,152 @@ larch show                                     # re-display the latest report
 
 Exit codes: `0` passed · `1` bug found · `2` some spec unproved · `3` error.
 
+## Contracts: LARCH.md
+
+One file at the repository root says what the code must do, in plain English:
+
+```markdown
+# Contracts
+
+## shop/shipping.py::shipping_cost_cents
+- The cost is always positive.
+- Express delivery always costs more than standard delivery for the same parcel and zone.
+- A heavier parcel never costs less than a lighter one to the same zone at the same speed.
+
+## web/src/payments.ts::splitPayment
+- The instalments add up exactly to the total.
+- No two instalments differ by more than one cent.
+
+## shop/pricing.py::line_total
+```
+
+- **Each bullet becomes a spec.** Larch formalizes it in Lean, and you approve it once.
+  The review shows your words next to Larch's reading of its Lean, so a mistranslation
+  is visible. Before you ever see it, each formalized contract is also checked against
+  concrete cases judged from your English alone (an output that should violate it and
+  one that should satisfy it); a formalization that disagrees is sent back for repair.
+- **Exact control when you want it:** put a ```` ```lean ```` block under a bullet and it is
+  used verbatim.
+- **A heading with no bullets** asks Larch to propose contracts. The ones you approve are
+  written back under the heading, so LARCH.md stays the record of what was agreed.
+- **Changing a bullet** makes Larch re-formalize that function on the next run.
+- `include: services/billing/LARCH.md` pulls in another file (monorepos).
+
+See [`examples/shop/LARCH.md`](examples/shop/LARCH.md) for a complete example.
+
+### Exhaustive testing
+
+When every input a function accepts fits in a small box (booleans, small enums,
+bounded integers, e.g. `1 <= weight_kg <= 30`, `1 <= zone <= 5`), Larch runs the
+implementation on **every** input instead of a random sample, smallest first. It also
+proves in Lean that the box contains every input the precondition allows, so the claim
+"checked on every valid input" is a theorem, not an assumption. On such a function a
+postcondition that held on every output holds for the code itself, not only for the
+model. Larger domains fall back to differential random testing; the limit is
+`exhaustive_limit` (default 100,000 inputs).
+
+### Stateful components (classes)
+
+Put a class under a heading (`## shop/ledger.py::Ledger`) and Larch verifies the object,
+not just one call:
+
+- **The model is a Lean state machine:** a `State` structure, the constructor, one step
+  per public method (raising = failing without changing the state), and read-only
+  *observers* (such as `total()` or a `totalCents` getter).
+- **Invariants** ("no balance is ever negative") are proved for **every reachable
+  state**, meaning every state the object can get into through its constructor and any
+  sequence of calls. **Operation contracts** ("withdrawing more than the balance fails",
+  "a transfer never changes the total") are proved for every call from every such state.
+- **The real object is tested with call sequences:** random sequences, plus every
+  sequence up to a few calls over small argument pools. Results and observers are
+  compared with the model after every call, so a method that corrupts state and then
+  raises is caught at the next observation. Failures are shrunk to the shortest
+  sequence:
+
+  ```text
+  ✗ Implementation disagrees with the verified model  (likely)
+     calls  ledger = Ledger()
+            ledger.transfer('a', 'b', 1)
+            ledger.total()
+     implementation  1
+     verified model  0
+  ```
+- Mutation analysis and validated fixes work as for functions; a fix must agree with the
+  model on every sequence before it is offered.
+
+### Services and databases
+
+A `## service NAME` heading verifies a running HTTP service, database included:
+
+```markdown
+## service orders
+start: uvicorn shop.api:app --port {port}
+database: postgres
+- Retrying `POST /orders` with the same Idempotency-Key returns the original order.
+- A payment that fails (402, 404 or 409) changes nothing.
+```
+
+- **Larch runs it.** It starts a throwaway database (`postgres` through Docker or local
+  binaries, `sqlite`, `none`, or a URL you give), sets `DATABASE_URL` and `PORT`, runs
+  `start:` (optionally after `setup:`), and reads the OpenAPI description and the route
+  source (`source:` narrows it). Between request sequences it empties every table and
+  restarts id sequences, so ids are predictable; `reset:` adds a request or command of
+  your own.
+- **The model is a state machine whose operations are endpoints.** Each returns the
+  status code and the response fields that matter; contracts and invariants are proved
+  exactly as for classes. Values that are random by design (UUIDs, timestamps) are
+  compared by order of first appearance.
+- **Request sequences** are compared with the model step by step. Mutation analysis and
+  validated fixes run on a copy of your project started on its own port; your working
+  tree is never changed. `--apply` writes a validated fix to the handler's file.
+
+### Finding deep bugs
+
+Sequences are generated against the model first, which is cheap: Larch keeps the
+sequences that reach new behaviour (a new outcome of an operation, or a new run of two
+or three outcomes), grows them by adding and replacing calls, and runs the
+implementation on the rarest. In the shop example this raises the share of sequences
+that contain a successful payment from about 1% to 40%, so "pay, then pay again" and
+"retry after paying" are tested hundreds of times rather than by luck. Failures shrink
+by removing calls one at a time.
+
+When the reviewer finds that the model, not the code, is wrong about a disagreement,
+Larch revises the model (same operations and contracts), re-checks it and re-tests,
+instead of reporting a bug in correct code.
+
+### System rules
+
+Guarantees about components working together go under `# System rules`, each naming the
+components it relies on:
+
+```markdown
+# System rules
+- At checkout, the instalments for a cart add up exactly to the cart's total.
+  (uses: web/src/cart.ts::Cart, web/src/payments.ts::splitPayment)
+- Paying an order a second time never charges the customer again.  (uses: service orders)
+```
+
+After verifying those components, Larch puts their Lean models side by side, writes the
+rule as one Lean proposition over them, and proves
+
+    contract of Cart → contract of splitPayment → rule
+
+so the rule holds for **any** implementation that meets those contracts. The report says
+which contracts the rule rests on and how each was established:
+
+| result | meaning |
+|---|---|
+| passed | proved from contracts that are themselves proved, about models the code agrees with |
+| partial | proved, but some contract it rests on is only tested; or not proved |
+| bug | proved, but a component it uses disagrees with its model |
+
+Rules run with `larch verify` (no arguments), after the components.
+
 ## Team workflow
 
-1. **Approve specs once.** `larch init` creates `.larch/`. Every spec you approve
-   interactively is stored in `.larch/specs/` as reviewable JSON. Commit it: the specs
-   are the durable asset ("what this function must do", signed off by a person).
+1. **Write and approve contracts once.** `larch init` creates `.larch/` and drafts
+   LARCH.md. Every spec you approve is stored in `.larch/specs/` as reviewable JSON.
+   Commit both: they are the durable asset ("what this code must do", signed off by a person).
 2. **Check every pull request.** In CI, `larch verify --changed --approved-only`
    re-tests every changed function that has approved specs against those specs. It
    makes no formalization calls; add `--no-proofs` to skip re-proving unchanged specs and
@@ -206,6 +349,7 @@ repository root.
 | `--provider` | `auto` | `anthropic`, `bedrock`, `vertex` or `claude-code` (see below) |
 | `--effort` | `low` | reasoning effort for formalization (`low`…`max`) |
 | `--tests N` | 2000 | generated inputs for differential testing |
+| `exhaustive_limit` (config) | 100000 | test every input when the proved-complete domain is at most this large |
 | `--mutants N` | 40 | injected bugs for mutation analysis |
 | `--budget USD` | 5 | hard cap on LLM spend per function |
 | `--python PATH` | discovered | interpreter (or virtualenv) for Python code |
@@ -272,9 +416,11 @@ permissions, like your tests), and Larch writes nothing into your repository.
 | | Python | TypeScript / JavaScript |
 |---|---|---|
 | functions | module-level functions, `@staticmethod`s | top-level `function`s, `const f = (…) =>`, static methods (exported or not) |
+| classes | public methods and `@property`s; `__init__` or `@dataclass` constructors | public methods and getters; constructors (incl. parameter properties) |
 | values | `int`, `bool`, `str`, single characters, lists, tuples, `Optional` | integer `number`s (within ±2^53−1), `bigint`, `boolean`, `string`, arrays, tuples, `null`/`undefined`/optional |
 | errors | documented exceptions | documented `throw`s |
-| not yet | floats, dicts, sets, objects and methods with state, I/O, async, generators, `*args` | non-integer numbers, objects/`Map`/`Date`, `this`, async, generators, rest/destructured parameters |
+| services | any HTTP service you can start with a command (JSON bodies); mutants and fixes for Python handlers | the same; mutants and fixes are Python-only for now |
+| not yet | floats; dicts, sets and objects as arguments or results; I/O; async; generators; `*args` | non-integer numbers; objects/`Map`/`Date` as arguments or results; async; generators; rest/destructured parameters |
 
 Larch refuses these up front (and `larch scan` says why) rather than giving an
 unreliable answer. Linux and macOS are supported; Windows is not yet (use WSL).

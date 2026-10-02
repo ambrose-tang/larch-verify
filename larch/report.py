@@ -30,6 +30,8 @@ class SpecResult:
     vacuity_tried: int = 0
     vacuity_rejected: int = 0
     impl_violations: int = 0
+    origin: str = "llm"  # llm | contract (LARCH.md) | larch (e.g. input_domain)
+    contract: str = ""  # the developer's words, for origin == "contract"
 
     @property
     def possibly_vacuous(self) -> bool:
@@ -54,6 +56,7 @@ class FixProposal:
     applied: bool = False
     new_source: str = ""  # full patched module source (what was validated)
     base_sha256: str = ""  # hash of the file content the fix was validated against
+    file: str = ""  # the file the fix applies to, when it is not the verified one (services)
 
 
 @dataclass
@@ -68,10 +71,17 @@ class Finding:
     count: int = 1  # how many sampled inputs showed this kind of failure
     fix: FixProposal | None = None
 
+    def input_text(self, function: str, kind: str = "function") -> str:
+        """The failing input: a call `f(args)`, or for a component the call sequence."""
+        if kind in ("component", "service"):
+            return self.args_repr
+        return f"{function.split('.')[-1]}({self.args_repr})"
+
     def title(self) -> str:
         return {
             "spec_violation": "Implementation violates an approved spec",
             "divergence": "Implementation disagrees with the verified model",
+            "value": "Implementation disagrees with the verified model",
             "crash": "Implementation raises an exception on a valid input",
             "timeout": "Implementation does not terminate on a valid input",
             "type": "Implementation returns a value of the wrong type",
@@ -105,6 +115,7 @@ class Report:
     function: str
     file: str
     language: str = "python"
+    kind: str = "function"  # function | component | service
     line: int = 0
     runtime: str = ""  # the interpreter that ran the code under test, and why it was chosen
     verdict: str = "error"  # passed | bug | partial | error
@@ -173,7 +184,7 @@ class Report:
             for f in self.findings:
                 L += [
                     f"### {f.title()} ({f.confidence})",
-                    f"- input: `{self.function}({f.args_repr})`",
+                    ("- calls:\n```\n" + f.args_repr + "\n```") if self.kind != "function" else f"- input: `{self.function}({f.args_repr})`",
                     f"- implementation: `{f.impl}`",
                     f"- verified model: `{f.model}`",
                 ]
@@ -185,7 +196,9 @@ class Report:
                     L += ["", "Proposed fix" + (" (validated against the model)" if f.fix.validated else " (NOT validated)") + ":", "```diff", f.fix.diff, "```"]
                 L.append("")
         if self.drt:
-            L += ["## Differential testing", f"{self.drt.get('valid', 0)} valid inputs, {self.drt.get('disagreements', 0)} disagreements.", ""]
+            how = ("Exhaustive: every valid input (domain proved complete)" if self.drt.get("complete")
+                   else "Exhaustive over the stated ranges" if self.drt.get("exhaustive") else "Differential testing")
+            L += ["## Testing", f"{how}: {self.drt.get('valid', 0)} valid inputs, {self.drt.get('disagreements', 0)} disagreements.", ""]
         if self.mutation:
             m = self.mutation
             L += ["## Mutation analysis", f"{m.killed}/{m.total} mutants detected ({m.score:.0%}); {m.killed_by_specs} by the specs alone."]

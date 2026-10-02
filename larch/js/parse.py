@@ -228,6 +228,16 @@ class FunctionDecl:
 
 
 @dataclass
+class ClassDecl:
+    name: str
+    start_tok: int  # first token of the declaration (after JSDoc)
+    end_tok: int  # closing brace
+    jsdoc: str | None = None
+    jsdoc_tok: int | None = None
+    members: list[FunctionDecl] = field(default_factory=list)  # methods, getters, constructor
+
+
+@dataclass
 class Statement:
     start: int  # token index
     end: int  # inclusive token index
@@ -242,6 +252,7 @@ class Module:
         self.toks = [t for t in self.all_toks if t.kind != "comment"]
         self._match = self._matching()
         self.statements = self._statements()
+        self.classes: list[ClassDecl] = []
         self.functions = self._functions()
 
     # -- helpers ------------------------------------------------------------------------
@@ -562,8 +573,8 @@ class Module:
         while m < end:
             start = m
             mods = set()
-            while self.toks[m].kind == "id" and self.toks[m].text in ("static", "public", "private", "protected", "async", "readonly", "override", "abstract", "declare") \
-                    and not self._is(m + 1, "("):
+            while self.toks[m].kind == "id" and self.toks[m].text in ("static", "public", "private", "protected", "async", "readonly", "override", "abstract", "declare", "get", "set") \
+                    and not self._is(m + 1, "(") and not self._is(m + 1, "=") and not self._is(m + 1, ":"):
                 mods.add(self.toks[m].text)
                 m += 1
             gen = False
@@ -584,7 +595,8 @@ class Module:
                     out.append(FunctionDecl(
                         f"{cls}.{name}", cls, name, start, self._match[nxt], nxt, params, ret,
                         is_async="async" in mods, is_generator=gen, is_static="static" in mods,
-                        jsdoc=doc, jsdoc_tok=doc_tok, kind="method",
+                        jsdoc=doc, jsdoc_tok=doc_tok,
+                        kind="getter" if "get" in mods else "setter" if "set" in mods else "method",
                     ))
                     m = self._match[nxt] + 1
                     continue
@@ -592,6 +604,9 @@ class Module:
                 continue
             # property, accessor, constructor, ...: skip to the end of the member
             m = self._member_end(start, end) + 1
+        doc, doc_tok = self._jsdoc_before(st.start)
+        self.classes.append(ClassDecl(cls, st.start, end, doc, doc_tok, list(out)))
+        # Only static methods are standalone functions; instance members belong to the class.
         return out
 
 

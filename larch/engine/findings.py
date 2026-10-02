@@ -27,14 +27,14 @@ class Classified:
 
 def representative_failures(drt: dict) -> list[dict]:
     """The shrunk counterexample first, then the rest (deduplicated by kind/specs)."""
-    recs = []
-    if drt.get("minimal"):
-        recs.append(drt["minimal"])
+    recs = list(drt.get("minimals") or ([drt["minimal"]] if drt.get("minimal") else []))
     recs += drt.get("failures", [])
     seen = set()
     out = []
     for r in recs:
-        key = (r.get("kind"), tuple(sorted(r.get("impl_violates", []))))
+        # Call sequences carry a group (failing operation and outcome classes); functions
+        # are grouped by kind and violated specs.
+        key = r.get("group") or (r.get("kind"), tuple(sorted(r.get("impl_violates", []))))
         if key in seen:
             continue
         seen.add(key)

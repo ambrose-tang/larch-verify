@@ -24,7 +24,7 @@ from .runner import JobRunner
 from .findings import adjudicate, classify, count_kind, make_finding, propose_fix, repair_model
 from .formalize import FormalizeError, build_lean, formalize
 from .prove import finalize_proofs, prove_all
-from .testing import make_mutants, run_drt, run_examples, run_mutants
+from .testing import exhaustive_size, make_mutants, run_drt, run_examples, run_exhaustive, run_mutants
 from .store import load_approved, save_approved
 
 
@@ -33,7 +33,9 @@ def artifacts_root(cfg: Config) -> Path:
 
 
 def verify_function(path: Path, func: str, cfg: Config, ui: UI | None = None, *, llm: LLM | None = None,
-                    spec_override: FormalSpec | None = None) -> Report:
+                    spec_override: FormalSpec | None = None, subject=None) -> Report:
+    """Verify one function. `subject` is its entry in LARCH.md (larch.contracts.Subject),
+    whose contracts become mandatory specs."""
     ui = ui or UI()
     t_start = time.monotonic()
     path = Path(path)
@@ -60,7 +62,8 @@ def verify_function(path: Path, func: str, cfg: Config, ui: UI | None = None, *,
         llm = llm or LLM(make_provider(cfg.provider, cache=cfg.cache), ledger)
         ws = LeanWorkspace(run_dir / "lean", tc)
         ctx = RunContext(cfg=cfg, llm=llm, tc=tc, ws=ws, runner=runner, checker=Checker(tc), info=info, ui=ui,
-                         run_dir=run_dir, lang=lang)
+                         run_dir=run_dir, lang=lang, contracts=list(subject.contracts) if subject else [],
+                         subject=subject)
         ui.header(target=f"{path}::{func}", model=f"{cfg.model} via {llm.provider.describe()}", lean=tc.version,
                   runtime=runtime.describe())
 
@@ -87,7 +90,7 @@ def verify_function(path: Path, func: str, cfg: Config, ui: UI | None = None, *,
         (run_dir / "error.txt").write_text(str(e) + "\n")
     except FormalizeError as e:
         report.verdict = "error"
-        report.error = f"{e}: " + "; ".join(p.splitlines()[0] for p in e.problems[:3])
+        report.error = f"{e}: " + "; ".join(" ".join(ln.strip() for ln in p.splitlines()[:4] if ln.strip())[:300] for p in e.problems[:3])
         report.headline = "Could not formalize this function."
     except UsageLimitError:
         raise  # not a property of the function: let the caller pause or report it
@@ -121,6 +124,8 @@ def _run(ctx: RunContext, report: Report, spec_override: FormalSpec | None) -> N
     reused = False
     if spec is None and not cfg.extra.get("fresh"):
         saved = load_approved(ctx.info)
+        if saved is not None and saved[0].contracts != [c.text for c in ctx.contracts]:
+            saved = None  # LARCH.md changed since approval: formalize the new contracts
         if saved is not None and (cfg.auto_approve or cfg.extra.get("reuse") or ui.confirm(
             f"Reuse the specification you approved on {saved[1]}?", default=True)):
             spec = saved[0]
@@ -162,6 +167,7 @@ def _run(ctx: RunContext, report: Report, spec_override: FormalSpec | None) -> N
                 continue
             for p in spec.postconditions + spec.properties:
                 p.status = "rejected" if p.name in decision.rejected else "approved"
+            _write_back(ctx, spec, report)
             break
         assert spec is not None
         if not spec.spec_names():
@@ -183,8 +189,12 @@ def _run(ctx: RunContext, report: Report, spec_override: FormalSpec | None) -> N
     findings = []
     drt: dict = {}
     for repair_round in range(cfg.model_repairs + 1):
-        with ui.step("Differential test: implementation vs. model") as st, ctx.timed("test"):
-            drt = run_drt(ctx, spec, n=cfg.tests, vacuity=True)
+        size = exhaustive_size(ctx, spec)
+        exhaustive = size is not None and size <= cfg.exhaustive_limit
+        title = (f"Exhaustive test: implementation vs. model on all {size:,} inputs" if exhaustive
+                 else "Differential test: implementation vs. model")
+        with ui.step(title) as st, ctx.timed("test"):
+            drt = run_exhaustive(ctx, spec) if exhaustive else run_drt(ctx, spec, n=cfg.tests, vacuity=True)
             if not drt.get("ok"):
                 raise RuntimeError(f"differential testing failed: {drt.get('error')}")
             c = drt.get("counts", {})
@@ -238,6 +248,7 @@ def _run(ctx: RunContext, report: Report, spec_override: FormalSpec | None) -> N
                         report.warnings.append("unresolved model disagreement: " + mi[:200])
                     break
                 spec = new
+                (ctx.run_dir / "spec.json").write_text(json.dumps(spec.to_json(), indent=2, ensure_ascii=False))
                 report.model_revisions.append(why)
                 st.done(why[:120])
                 if conflict:
@@ -254,6 +265,7 @@ def _run(ctx: RunContext, report: Report, spec_override: FormalSpec | None) -> N
         "pre_false": c.get("pre_false", 0),
         "counts": c,
         "inputs": drt.get("inputs", 0),
+        "exhaustive": bool(drt.get("exhaustive")) and not drt.get("stopped_early"),
     }
     vac = drt.get("vacuity", {})
     impl_viol_counts: dict[str, int] = {}
@@ -302,7 +314,10 @@ def _run(ctx: RunContext, report: Report, spec_override: FormalSpec | None) -> N
                         ms.likely_equivalent += 1
                     m = by_id.get(r["id"])
                     if m:
-                        ms.survivors.append(m.description + (" (likely equivalent)" if r.get("likely_equivalent") else ""))
+                        # On buggy code, a mutant that agrees with the verified model is not
+                        # "equivalent": it is a one-token candidate fix.
+                        tag = " (agrees with the model: a candidate fix)" if findings else " (likely equivalent)"
+                        ms.survivors.append(m.description + (tag if r.get("likely_equivalent") else ""))
             ms.total = len(muts)
             report.mutation = ms
             if ms.total:
@@ -346,10 +361,22 @@ def _run(ctx: RunContext, report: Report, spec_override: FormalSpec | None) -> N
     total = len(report.active_specs)
     proved = report.proved
     valid = report.drt.get("valid", 0)
+    domain = next((s for s in report.specs if s.name == "input_domain"), None)
+    complete = report.drt.get("exhaustive") and (domain is None or (domain.proof and domain.proof.status == "proved"))
+    report.drt["complete"] = bool(complete)
+    # On a complete domain, a postcondition checked on the implementation's output for
+    # every input holds for the code itself, proof or not; properties still need proofs.
+    unproved_props = [s for s in report.active_specs if s.kind == "property" and not (s.proof and s.proof.status == "proved")]
     if actionable:
         report.verdict = "bug"
         f = actionable[0]
         report.headline = f"{f.title()}: {ctx.info.name.split('.')[-1]}({f.args_repr}) returned {f.impl}, expected {f.model}."
+    elif complete and valid > 0 and not unproved_props:
+        report.verdict = "passed"
+        report.headline = (
+            f"Checked on every one of the {valid:,} valid inputs (input domain proved complete): the implementation "
+            f"agrees with the verified model and satisfies all {total} specs; {proved}/{total} also proved about the model."
+        )
     elif proved == total and total > 0 and valid > 0:
         report.verdict = "passed"
         report.headline = (
@@ -364,6 +391,19 @@ def _run(ctx: RunContext, report: Report, spec_override: FormalSpec | None) -> N
     possible = [f for f in findings if f.confidence == "possible"]
     if possible and report.verdict != "bug":
         report.warnings.append(f"{len(possible)} disagreement(s) could not be attributed to the code or the model; review them")
+
+
+def _write_back(ctx: RunContext, spec: FormalSpec, report: Report) -> None:
+    """A LARCH.md heading without bullets asked Larch to propose contracts: record the
+    ones a person approved there, in English, so the file stays the source of truth."""
+    from ..contracts import write_back
+
+    subject = getattr(ctx, "subject", None)
+    if subject is None or subject.contracts or ctx.cfg.auto_approve:
+        return
+    bullets = [p.english for p in spec.postconditions + spec.properties if p.status == "approved" and p.origin != "larch"]
+    if bullets and write_back(subject, bullets):
+        report.warnings.append(f"recorded {len(bullets)} approved contract(s) in {subject.file.name}")
 
 
 def _prove_stage(ctx: RunContext, spec: FormalSpec) -> dict[str, ProofResult]:
@@ -408,12 +448,13 @@ def _fill_specs(report: Report, spec: FormalSpec, proofs: dict, vac: dict | None
             name=p.name, kind="postcondition", english=p.english, lean=p.lean,
             approval=p.status if p.status != "proposed" else "approved", proof=proofs.get(p.name),
             mutants_caught=kills.get(p.name, 0), vacuity_tried=v.get("tried", 0), vacuity_rejected=v.get("rejected", 0),
-            impl_violations=impl_viol.get(p.name, 0),
+            impl_violations=impl_viol.get(p.name, 0), origin=p.origin, contract=p.contract,
         ))
     for q in spec.properties:
         report.specs.append(SpecResult(
             name=q.name, kind="property", english=q.english, lean=q.lean,
             approval=q.status if q.status != "proposed" else "approved", proof=proofs.get(q.name),
+            origin=q.origin, contract=q.contract,
         ))
 
 

@@ -61,7 +61,12 @@ def load_approved(info: FunctionInfo) -> tuple[FormalSpec, str] | None:
         return None
     try:
         doc = json.loads(p.read_text())
-        spec = FormalSpec.from_json(doc["spec"])
+        if doc["spec"].get("kind") == "component":
+            from ..component import ComponentSpec
+
+            spec = ComponentSpec.from_json(doc["spec"])
+        else:
+            spec = FormalSpec.from_json(doc["spec"])
     except (json.JSONDecodeError, KeyError, TypeError):
         return None
     # Parameters must still line up with the current signature.
