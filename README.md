@@ -97,6 +97,7 @@ larch scan                                     # which functions in this repo ca
 larch verify src/pricing.py::apply_discount    # one function
 larch verify web/src/pagination.ts::pageCount  # TypeScript works the same way
 larch verify src/pricing.py                    # every public function in a file
+larch                                          # interactive: draft LARCH.md together, then verify
 larch verify src/ --limit 10                   # the 10 best candidates in a directory
 larch verify --changed origin/main             # functions this branch changed
 larch verify src/pricing.py::f --apply         # offer to apply a validated fix (asks first)
@@ -104,6 +105,29 @@ larch show                                     # re-display the latest report
 ```
 
 Exit codes: `0` passed · `1` bug found · `2` some spec unproved · `3` error.
+
+## Interactive: `larch`
+
+Run `larch` with no arguments in your repository for a guided session:
+
+1. **Draft LARCH.md together.** Larch reads a compact summary of the repository (and the
+   source of anything it needs), asks what the code is *for* and what must never go
+   wrong, then proposes contracts in its own words and confirms them with you, often as
+   a quick multiple choice. Each agreed change is written to LARCH.md at once.
+2. **Verify.** When the draft covers what you confirmed, Larch asks whether to start, then
+   runs `larch verify` with its usual step-by-step log.
+3. **Result.** If anything fails, `.larch/what-to-fix.md` lists each failing call, what
+   it returned and what was expected, the explanation, and any validated fix. If
+   everything passes you get `LARCH-CERTIFICATE.json`: the contracts and every verified
+   source file pinned by SHA-256, with how each contract was proved, the commit, and a
+   digest over the whole certificate. `larch certificate` re-checks it later and says
+   exactly what changed.
+
+Every version of LARCH.md is kept in `.larch/history/`. In the session, `/undo` takes
+back the last change, `/rollback` picks any earlier version (including "no LARCH.md"),
+`/diff` shows what the last change did, `/show` prints the draft, `/verify` starts
+verification, and `/quit` leaves. A drafting turn costs about 3k input tokens: the
+conversation keeps only recent turns, since the draft itself carries what was agreed.
 
 ## Contracts: LARCH.md
 

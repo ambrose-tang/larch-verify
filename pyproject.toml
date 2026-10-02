@@ -29,6 +29,8 @@ classifiers = [
 dependencies = [
   "anthropic>=0.40",
   "rich>=13.7",
+  "prompt_toolkit>=3.0.43",  # the interactive `larch` session
+  "questionary>=2.0",
   # Runs only in Larch's own interpreter (the test driver), never in the project's.
   "hypothesis>=6.100",
 ]
