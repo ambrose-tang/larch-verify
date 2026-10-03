@@ -63,6 +63,11 @@ def verify_function(path: Path, func: str, cfg: Config, ui: UI | None = None, *,
         if lang is None:
             raise ExtractError(f"{path.suffix or path.name}: unsupported file type")
         info = lang.extract(path, func)
+        from ..repo import scope_problem
+
+        prob = scope_problem(info)
+        if prob:
+            raise ExtractError(f"{func} {prob}.")
         report.language = lang.name
         report.line = info.lineno
         runtime = lang.runtime(info, cfg)
@@ -167,6 +172,15 @@ def _run(ctx: RunContext, report: Report, spec_override: FormalSpec | None) -> N
                         report.warnings.append(w)
                 if san.impl_disagreements:
                     st.line(f"[yellow]implementation already disagrees with the model on {san.impl_disagreements} of 200 quick-test inputs[/]")
+            quick = systematic(san.impl_run) if san.impl_run else None
+            if quick and quick.get("uniform_crash"):
+                # The real function fails the same way on nearly every input Larch can build:
+                # stop before review, proofs and mutation, which would all be meaningless.
+                types = ", ".join(f"{p.name}: {p.lean_type}" for p in spec.params)
+                raise CallMismatch(
+                    f"Larch read the parameters as ({types}), but the function raised the same exception on "
+                    f"{quick['dis']} of {quick['valid']} inputs built that way. Either those are not the types it takes "
+                    "(add type annotations and re-run) or it fails for every input.", quick)
             if cfg.auto_approve:
                 for p in spec.postconditions + spec.properties:
                     p.status = "auto-approved"

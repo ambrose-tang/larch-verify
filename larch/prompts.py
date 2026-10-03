@@ -472,6 +472,11 @@ specified reference behaviour, and a concrete failing input. Propose the SMALLES
 that makes the function correct for all inputs, not just this one. Keep the style,
 naming, signature and structure; do not refactor. Return the complete fixed function
 definition (including decorators and docstring), and nothing else in that field.
+Never change what the function accepts (its parameters, their types, or the shape of
+the values it reads from them) and never add exception handling that hides a failure:
+the fix must work for the function's real callers. If the failing input is not one the
+function is meant to accept, the problem is in the test, not the code: return an empty
+fixed function and say so in the explanation.
 """
 
 FIX_SCHEMA = {

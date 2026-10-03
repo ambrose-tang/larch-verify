@@ -163,6 +163,40 @@ def repair_model(ctx: RunContext, spec: FormalSpec, issues: list[str]) -> tuple[
     return None, "model repair did not produce a consistent model", ""
 
 
+def fix_changes_interface(info, fixed: str) -> str | None:
+    """Why a proposed fix is not a fix (Python): it changes the parameters callers pass, or
+    hides failures with a handler that swallows them."""
+    if info.language != "python":
+        return None
+    import ast
+    import textwrap
+
+    def fn(src: str):
+        try:
+            return next(n for n in ast.walk(ast.parse(textwrap.dedent(src))) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)))
+        except (SyntaxError, StopIteration):
+            return None
+
+    def sig(f):
+        a = f.args
+        return [(x.arg, ast.unparse(x.annotation) if x.annotation else None) for x in a.posonlyargs + a.args], \
+            [ast.unparse(d) for d in a.defaults]
+
+    def swallowing(f) -> int:
+        return sum(1 for n in ast.walk(f) if isinstance(n, ast.ExceptHandler)
+                   and all(isinstance(b, (ast.Pass, ast.Continue)) or (isinstance(b, ast.Expr) and isinstance(b.value, ast.Constant))
+                           for b in n.body))
+
+    old, new = fn(info.source), fn(fixed)
+    if old is None or new is None:
+        return None
+    if sig(old) != sig(new):
+        return "it changes the function's parameters"
+    if swallowing(new) > swallowing(old):
+        return "it adds an exception handler that silently ignores the failure"
+    return None
+
+
 def propose_fix(ctx: RunContext, spec: FormalSpec, recs: list[dict]) -> FixProposal | None:
     info = ctx.info
     feedback = None
@@ -181,6 +215,11 @@ def propose_fix(ctx: RunContext, spec: FormalSpec, recs: list[dict]) -> FixPropo
         fixed_fn = str(d.get("fixed_function", "")).strip("\n")
         if not fixed_fn.strip():
             return None
+        problem = fix_changes_interface(info, fixed_fn)
+        if problem:
+            feedback = f"Rejected: {problem}. Fix the logic for the function's real callers instead."
+            last = FixProposal(explanation=str(d.get("explanation", "")).strip(), diff="", validated=False, validation=feedback)
+            continue
         new_source = ctx.lang.splice_function(info, fixed_fn)
         # The fix must load in the project's own runtime (its version, its installed
         # packages), not just in Larch's.

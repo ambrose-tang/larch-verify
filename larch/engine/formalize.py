@@ -34,11 +34,12 @@ class Sanity:
     domain_errors: int = 0
     impl_violations: list[str] = field(default_factory=list)
     impl_disagreements: int = 0
+    impl_run: dict = field(default_factory=dict)  # the quick test of the implementation (not shown in review)
     warnings: list[str] = field(default_factory=list)
     props: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict:
-        return self.__dict__.copy()
+        return {k: v for k, v in self.__dict__.items() if k != "impl_run"}
 
 
 def spec_from_data(data: dict, ctx: RunContext) -> tuple[FormalSpec | None, list[str]]:
@@ -339,6 +340,7 @@ def sanity_check(ctx: RunContext, spec: FormalSpec, *, strict_contracts: bool = 
         san.impl_violations = sorted(viol)
         c = impl.get("counts", {})
         san.impl_disagreements = sum(c.get(k, 0) for k in ("value", "crash", "timeout", "type"))
+        san.impl_run = impl
     return problems, san
 
 

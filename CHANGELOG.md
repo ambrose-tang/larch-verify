@@ -60,6 +60,17 @@
   with a LARCH.md, system rules and realistic seeded bugs.
 
 ### Fixed
+- A function that only plots or writes files, or whose untyped parameter is read as a
+  dict (`r.get(...)`, `r["task"]`), was verified anyway with a guessed parameter type,
+  so every call crashed and the report claimed a bug with 100% disagreement (and
+  proposed rewriting the function to fit the guess). Such functions are now refused up
+  front, by `larch scan` and `larch verify`, with the reason; plotting and file-writing
+  calls count as impure.
+- If the real function raises the same exception on nearly every quick-test input right
+  after formalization, the run stops there with an error naming the exception and the
+  parameter types Larch assumed, instead of continuing for minutes.
+- A proposed fix may no longer change the function's parameters or add an exception
+  handler that silently swallows the failure.
 - A run whose disagreements could not be attributed to the code or the model was
   reported as **passed** (one self-verification run passed with 665 of 674 inputs
   disagreeing); it is now partial, and headlines count only the inputs that agreed.

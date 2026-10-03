@@ -381,6 +381,8 @@ def test_code_larch_cannot_call_is_an_error_not_a_bug(tmp_path: Path):
     report = verify_function(f, "double", _cfg(tmp_path), llm=llm)
     assert report.verdict == "error" and "could not call double" in report.headline, report.headline
     assert "TypeError" in report.error and not report.findings
+    # Caught by the quick test right after formalization: no review, diagnosis, proofs or fix.
+    assert asked == [] and {r.stage for r in llm.provider.requests} == {"formalize"}
 
 
 def test_disagreements_nobody_can_attribute_never_pass(tmp_path: Path):

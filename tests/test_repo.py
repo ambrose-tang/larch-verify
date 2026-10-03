@@ -204,3 +204,35 @@ def test_config_found_at_monorepo_root(tmp_path, monkeypatch):
     (pkg / ".larch.toml").write_text("mutants = 7\n")
     cfg = Config.load(pkg)
     assert cfg.tests == 123 and cfg.mutants == 7 and cfg.pythonpath == ["libs"]
+
+
+def test_scope_gate_refuses_what_cannot_be_compared(tmp_path):
+    """A plotting function with an untyped `rows` of dicts once ran for 13 minutes and
+    reported 1,931/1,931 disagreements: the guessed type made every call crash."""
+    from larch.py.backend import PYTHON
+    from larch.repo import scope_problem
+
+    f = tmp_path / "m.py"
+    f.write_text(
+        "import matplotlib.pyplot as plt\n"
+        "def fig(rows):\n    rows = [r for r in rows if r.get('ok') == 1]\n    if not rows:\n        return\n    plt.plot([1], [2])\n\n"
+        "def by_key(rows):\n    out = []\n    for r in rows:\n        out.append(r['x'])\n    return out\n\n"
+        "def helper(xs):\n    def inner(d):\n        return d.get('a')\n    return [x * 2 for x in xs]\n\n"
+        "def typed(d: dict):\n    return d.get('a')\n"
+    )
+    assert "never returns a value" in scope_problem(PYTHON.extract(f, "fig"))
+    assert "`rows` is used as a dict" in scope_problem(PYTHON.extract(f, "by_key"))
+    assert scope_problem(PYTHON.extract(f, "helper")) is None  # a nested function's dict is not the parameter
+    assert scope_problem(PYTHON.extract(f, "typed")) is None  # annotated: the type check handles it
+
+
+def test_fix_may_not_change_the_interface_or_hide_failures():
+    from types import SimpleNamespace
+
+    from larch.engine.findings import fix_changes_interface
+
+    info = SimpleNamespace(language="python", source="def g(rows):\n    return [r['a'] for r in rows]\n")
+    hide = "def g(rows):\n    try:\n        return [r['a'] for r in rows]\n    except Exception:\n        pass\n"
+    assert "silently ignores" in fix_changes_interface(info, hide)
+    assert "parameters" in fix_changes_interface(info, "def g(rows, strict=False):\n    return []\n")
+    assert fix_changes_interface(info, "def g(rows):\n    return [r['b'] for r in rows]\n") is None
