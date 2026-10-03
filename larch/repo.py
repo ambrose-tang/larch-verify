@@ -118,8 +118,9 @@ _TS_BAD = {"any": "any", "unknown": "unknown", "object": "objects", "Record": "r
            "Date": "dates", "Promise": "promises", "Function": "functions", "RegExp": "regexes", "Buffer": "buffers",
            "Uint8Array": "typed arrays", "symbol": "symbols"}
 _PY_IMPURE = re.compile(r"\b(open|input)\s*\(|\b(requests|httpx|urllib|socket|subprocess|os|shutil|sqlite3|"
-                        r"random|secrets|time|uuid|boto3|psycopg2?|redis)\.|datetime\.(now|today|utcnow)|\bself\.|"
-                        r"\bglobal\s|\bnonlocal\s|\bawait\b")
+                        r"random|secrets|time|uuid|boto3|psycopg2?|redis|plt|pyplot|matplotlib|sns|seaborn|logging)\.|"
+                        r"\.(savefig|show|to_csv|to_parquet|to_excel|write_text|write_bytes|mkdir|unlink)\s*\(|"
+                        r"datetime\.(now|today|utcnow)|\bself\.|\bglobal\s|\bnonlocal\s|\bawait\b")
 _JS_IMPURE = re.compile(r"\b(fetch|require)\s*\(|\b(fs|process|document|window|localStorage|sessionStorage|crypto|"
                         r"axios|http|https|child_process)\.|Math\.random|Date\.now|new\s+Date\s*\(|\bthis\.|\bawait\b")
 _BRANCH = re.compile(r"\b(if|elif|else|for|while|case|switch|match|try|except|catch)\b|\?\s|&&|\|\||\band\b|\bor\b")
@@ -177,9 +178,79 @@ def _code_only(info: FunctionInfo) -> str:
         return info.source
 
 
+_DICT_METHODS = {"get", "items", "keys", "values", "setdefault", "update", "pop"}
+# Numerical libraries: floating-point tensors and arrays, which Larch's exact models cannot represent.
+_NUMERIC = re.compile(r"\b(torch|nn|numpy|np|jax|jnp|tensorflow|tf|scipy|pandas|pd|sklearn)\.")
+
+
+def numeric_problem(info) -> str | None:
+    """Code built on floating-point tensors or arrays (PyTorch, NumPy, JAX, pandas...)."""
+    m = _NUMERIC.search(_code_only(info))
+    if not m:
+        return None
+    lib = {"nn": "torch", "np": "numpy", "jnp": "jax", "tf": "tensorflow", "pd": "pandas"}.get(m.group(1), m.group(1))
+    return (f"computes with {lib} (floating-point tensors or arrays), which Larch cannot model exactly; "
+            "to verify the discrete logic inside it, move that logic into a function or class over ints, "
+            "strings and lists")
+
+
+def scope_problem(info: FunctionInfo) -> str | None:
+    """Why Larch cannot verify this function at all, from its code (Python): it never
+    returns a value, or an unannotated parameter is used as a dict, which Larch can
+    neither infer nor generate. Without this, a guessed parameter type makes the real
+    function fail on every input and the run reports nonsense."""
+    prob = numeric_problem(info)
+    if prob:
+        return prob
+    if info.language != "python":
+        return None
+    import ast
+    import textwrap
+
+    try:
+        fn = next(n for n in ast.walk(ast.parse(textwrap.dedent(info.source)))
+                  if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)))
+    except (SyntaxError, StopIteration):
+        return None
+    own: list[ast.AST] = []
+    stack = list(fn.body)
+    while stack:  # this function's own nodes, not those of nested functions or lambdas
+        n = stack.pop()
+        own.append(n)
+        stack += [c for c in ast.iter_child_nodes(n) if not isinstance(c, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef))]
+    if not any(isinstance(n, ast.Return) and n.value is not None and not (isinstance(n.value, ast.Constant) and n.value.value is None)
+               for n in own):
+        return "never returns a value (side effects only, e.g. plotting or writing files)"
+    for a in fn.args.posonlyargs + fn.args.args:
+        if a.annotation is not None or a.arg in ("self", "cls"):
+            continue
+        names = {a.arg}
+        for n in own:  # loop variables over the parameter: `for r in rows`, `[... for r in rows]`
+            if isinstance(n, (ast.For, ast.comprehension)) and isinstance(n.iter, ast.Name) and n.iter.id in names \
+                    and isinstance(n.target, ast.Name):
+                names.add(n.target.id)
+        for n in own + [c for n in own for c in ast.walk(n) if isinstance(c, ast.comprehension)]:
+            if isinstance(n, ast.comprehension) and isinstance(n.iter, ast.Name) and n.iter.id in names and isinstance(n.target, ast.Name):
+                names.add(n.target.id)
+        for n in own:
+            for c in ast.walk(n):
+                if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute) and isinstance(c.func.value, ast.Name) \
+                        and c.func.value.id in names and c.func.attr in _DICT_METHODS:
+                    return (f"parameter `{a.arg}` is used as a dict (`{c.func.value.id}.{c.func.attr}(...)`) and has no type "
+                            "annotation; Larch cannot generate dicts yet")
+                if isinstance(c, ast.Subscript) and isinstance(c.value, ast.Name) and c.value.id in names \
+                        and isinstance(c.slice, ast.Constant) and isinstance(c.slice.value, str):
+                    return (f"parameter `{a.arg}` is used as a dict (`{c.value.id}[{c.slice.value!r}]`) and has no type "
+                            "annotation; Larch cannot generate dicts yet")
+    return None
+
+
 def assess(info: FunctionInfo) -> tuple[str, str, float]:
     """(status, reason, score) for one extracted function."""
     lang = info.language
+    prob = scope_problem(info)
+    if prob:
+        return "skipped", prob, 0.0
     for p in info.params:
         prob = _type_problem(p.annotation, lang)
         if prob:
@@ -215,6 +286,9 @@ def assess_class(info) -> tuple[str, str, float]:
     """(status, reason, score) for a class: every public method must use supported types
     and the code must not do I/O (its own state, via self/this, is the point)."""
     lang = info.language
+    prob = numeric_problem(info)
+    if prob:
+        return "skipped", prob, 0.0
     for p in info.params:
         prob = _type_problem(p.annotation, lang)
         if prob:

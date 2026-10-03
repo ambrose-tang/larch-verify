@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Added
+- **Diagnosis when most inputs disagree.** When over half of the inputs (or call
+  sequences) disagree, Larch first asks for one common cause across many examples: a
+  misread model or a representation difference revises the model and re-tests; inputs
+  the code cannot really take (for example every input raising the same exception
+  because of how it was called) end the run as an error, not a bug; only "the code is
+  wrong in general" goes on to a bug report, which then carries a warning with the
+  disagreement rate.
 - **`larch`** (no arguments): an interactive session that drafts LARCH.md with you by
   asking about intent and confirming proposed contracts (with multiple-choice answers
   where they fit), then verifies on request. Every LARCH.md version is kept in
@@ -53,6 +60,34 @@
   with a LARCH.md, system rules and realistic seeded bugs.
 
 ### Fixed
+- Classes and functions built on PyTorch, NumPy, JAX, pandas and similar (floating-point
+  tensors and arrays) are refused with the reason, by `larch scan`, `larch verify` and
+  the chat, instead of being "modelled" as something else and failing every test.
+- A model may only observe what the class exposes: an invented observer (one run read
+  `cur`, which the class does not have, and failed 4,262 of 4,262 sequences) is sent
+  back to the formalizer with the class's real members.
+- When the real class disagrees with the model on nearly every quick-test sequence in
+  the same way, formalization is repaired on the spot, and the run ends as "could not
+  formalize" if it cannot be, rather than testing for minutes and blaming the code.
+- `larch` chat: it no longer writes LARCH.md before you have said anything, an
+  unchanged draft is not a new version, it refuses to add subjects Larch cannot verify,
+  and it tells you at the start which existing subjects cannot be verified and why.
+- A function that only plots or writes files, or whose untyped parameter is read as a
+  dict (`r.get(...)`, `r["task"]`), was verified anyway with a guessed parameter type,
+  so every call crashed and the report claimed a bug with 100% disagreement (and
+  proposed rewriting the function to fit the guess). Such functions are now refused up
+  front, by `larch scan` and `larch verify`, with the reason; plotting and file-writing
+  calls count as impure.
+- If the real function raises the same exception on nearly every quick-test input right
+  after formalization, the run stops there with an error naming the exception and the
+  parameter types Larch assumed, instead of continuing for minutes.
+- A proposed fix may no longer change the function's parameters or add an exception
+  handler that silently swallows the failure.
+- A run whose disagreements could not be attributed to the code or the model was
+  reported as **passed** (one self-verification run passed with 665 of 674 inputs
+  disagreeing); it is now partial, and headlines count only the inputs that agreed.
+- `truncate(text, 0)` appended the whole text; English mentioning `/-` inside a Lean
+  doc comment left the comment open (both found by running Larch on itself).
 - Model results a JavaScript runtime cannot represent exactly (beyond 2^53) are outside
   the compared domain instead of reported as disagreements.
 - Formalization errors in reports show the Lean error, not only its heading.

@@ -35,12 +35,14 @@ def _session(tmp_path: Path, replies: list[dict]) -> tuple[ChatSession, list]:
 def test_reads_code_then_drafts_and_versions(tmp_path):
     s, prompts = _session(tmp_path, [
         {"say": "", "read": ["calc.py::add"]},
+        {"say": "Hi. What is `add` for?"},
         {"say": "So adding zero changes nothing. Right?", "choices": ["Yes", "Adjust"], "draft": DRAFT, "change": "add: identity"},
     ])
     reads = []
-    data = s.step(None, on_read=reads.append)
+    s.step(None, on_read=reads.append)
     assert reads == [["calc.py::add"]]
     assert "return a + b" in prompts[1] and "just opened Larch" in prompts[1]  # source shown; opening kept
+    data = s.step("A calculator's addition.")
     assert data["choices"] == ["Yes", "Adjust"]
     assert (tmp_path / "LARCH.md").read_text() == DRAFT
     assert [v.note for v in s.versions] == ["no LARCH.md yet", "add: identity"]
@@ -111,3 +113,25 @@ def test_certificate_pins_contracts_and_sources(tmp_path):
     assert check_certificate(root, cert) == ["calc.py changed (add)"]
     forged = dict(cert, issued="2000-01-01")
     assert "the certificate itself was edited (digest mismatch)" in check_certificate(root, forged)
+
+
+def test_opening_changes_nothing_and_repeats_are_not_versions(tmp_path):
+    s, _ = _session(tmp_path, [{"say": "Hi", "draft": DRAFT}, {"say": "Same", "draft": DRAFT}, {"say": "Again", "draft": DRAFT}])
+    s.step(None)
+    assert not (tmp_path / "LARCH.md").exists() and len(s.versions) == 1  # opening: nothing agreed yet
+    s.step("add it")
+    s.step("ok")
+    assert len(s.versions) == 2  # the identical draft the second time is not a new version
+
+
+def test_unverifiable_subjects_are_refused_and_flagged(tmp_path):
+    from larch.chat import ChatSession, unverifiable_subjects
+
+    s, _ = _session(tmp_path, [])
+    (tmp_path / "plot.py").write_text("import matplotlib.pyplot as plt\ndef fig(rows):\n    plt.plot(rows)\n")
+    bad = "# Contracts\n\n## plot.py::fig\n- It draws.\n"
+    assert "cannot be verified" in s.apply(bad, "x") and not (tmp_path / "LARCH.md").exists()
+    (tmp_path / "LARCH.md").write_text(bad)  # written by hand earlier
+    assert unverifiable_subjects(tmp_path, tmp_path / "LARCH.md")[0][0] == "plot.py::fig"
+    s2 = ChatSession(tmp_path, s.cfg, s.llm)
+    assert "plot.py::fig" in s2.opening() and "cannot be verified" in s2.opening()

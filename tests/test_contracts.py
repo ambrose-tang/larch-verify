@@ -290,3 +290,20 @@ def test_implementation_never_runs_outside_precondition(tmp_path):
     counts = report.drt["counts"]
     assert counts.get("pre_false", 0) > 0 and counts.get("timeout", 0) == 0, counts
     assert report.verdict != "bug", report.headline
+
+
+def test_the_repos_own_larch_md_is_valid():
+    """Larch is verified by Larch: LARCH.md at the repository root must parse, and every
+    function it states contracts for must still exist and be extractable."""
+    from pathlib import Path
+
+    from larch import contracts
+    from larch.lang import language_for
+
+    root = Path(__file__).resolve().parents[1]
+    cf = contracts.load(root / "LARCH.md")
+    assert cf.subjects, "LARCH.md names no subjects"
+    for s in cf.subjects:
+        assert s.contracts, f"{s.target} has no contracts"
+        extract = language_for(s.path).extract_class if s.kind == "component" else language_for(s.path).extract
+        assert extract(s.path, s.name).name == s.name

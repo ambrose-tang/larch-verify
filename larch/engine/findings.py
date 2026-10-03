@@ -84,6 +84,54 @@ def adjudicate(ctx: RunContext, spec: FormalSpec, rec: dict) -> tuple[str, str]:
     return str(d.get("verdict", "ambiguous")), str(d.get("explanation", "")).strip()
 
 
+SYSTEMATIC_RATE = 0.5  # above this share of disagreeing inputs, look for one common cause first
+
+
+def systematic(drt: dict, k: int = 8) -> dict | None:
+    """When most inputs disagree: the rate, a few diverse examples, and the exception the
+    implementation raised on nearly all of them, if it was the same one. None otherwise."""
+    from collections import Counter
+
+    c = drt.get("counts", {})
+    valid = sum(c.get(x, 0) for x in ("agree",) + DIVERGENT)
+    dis = sum(c.get(x, 0) for x in DIVERGENT)
+    if valid < 20 or dis < SYSTEMATIC_RATE * valid:
+        return None
+    fails = list(drt.get("failures") or [])
+    seen, samples = set(), []
+    for f in sorted(fails, key=lambda f: len(str(f.get("args_repr", "")))):
+        key = (str(f.get("impl"))[:60], str(f.get("model"))[:60])
+        if key not in seen:
+            seen.add(key)
+            samples.append(f)
+        if len(samples) >= k:
+            break
+    crashes = [str(f.get("impl", "")) for f in fails if f.get("kind") == "crash"]
+    heads = Counter(x.split(":", 1)[0] for x in crashes)
+    uniform = None
+    if crashes and c.get("crash", 0) >= 0.9 * dis and heads.most_common(1)[0][1] >= 0.9 * len(crashes):
+        head = heads.most_common(1)[0][0]
+        uniform = next(x for x in crashes if x.startswith(head))[:300]
+    return {"rate": dis / valid, "valid": valid, "dis": dis, "samples": samples or fails[:k], "uniform_crash": uniform}
+
+
+def diagnose_systematic(ctx: RunContext, spec: FormalSpec, diag: dict) -> tuple[str, str]:
+    """One judgement over many disagreements: (verdict, common cause and explanation)."""
+    from ..prompts import SYSTEMATIC_SCHEMA, SYSTEMATIC_SYSTEM, systematic_user
+
+    try:
+        resp = ctx.ask(LLMRequest(system=SYSTEMATIC_SYSTEM, prompt=systematic_user(ctx.info, spec, diag), model=ctx.cfg.model,
+                                  stage="adjudicate", effort=ctx.cfg.effort, json_schema=SYSTEMATIC_SCHEMA))
+    except UsageLimitError:
+        raise
+    except (LLMError, BudgetExceeded) as e:
+        return "mixed", f"(diagnosis unavailable: {e})"
+    d = resp.data or {}
+    cause = str(d.get("common_cause", "")).strip()
+    why = str(d.get("explanation", "")).strip()
+    return str(d.get("verdict", "mixed")), (cause + (" " + why if why else "")).strip()
+
+
 def repair_model(ctx: RunContext, spec: FormalSpec, issues: list[str]) -> tuple[FormalSpec | None, str, str]:
     """Ask for a corrected model under FIXED approved specs. Returns (new spec or None,
     explanation, spec_conflict)."""
@@ -115,6 +163,40 @@ def repair_model(ctx: RunContext, spec: FormalSpec, issues: list[str]) -> tuple[
     return None, "model repair did not produce a consistent model", ""
 
 
+def fix_changes_interface(info, fixed: str) -> str | None:
+    """Why a proposed fix is not a fix (Python): it changes the parameters callers pass, or
+    hides failures with a handler that swallows them."""
+    if info.language != "python":
+        return None
+    import ast
+    import textwrap
+
+    def fn(src: str):
+        try:
+            return next(n for n in ast.walk(ast.parse(textwrap.dedent(src))) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)))
+        except (SyntaxError, StopIteration):
+            return None
+
+    def sig(f):
+        a = f.args
+        return [(x.arg, ast.unparse(x.annotation) if x.annotation else None) for x in a.posonlyargs + a.args], \
+            [ast.unparse(d) for d in a.defaults]
+
+    def swallowing(f) -> int:
+        return sum(1 for n in ast.walk(f) if isinstance(n, ast.ExceptHandler)
+                   and all(isinstance(b, (ast.Pass, ast.Continue)) or (isinstance(b, ast.Expr) and isinstance(b.value, ast.Constant))
+                           for b in n.body))
+
+    old, new = fn(info.source), fn(fixed)
+    if old is None or new is None:
+        return None
+    if sig(old) != sig(new):
+        return "it changes the function's parameters"
+    if swallowing(new) > swallowing(old):
+        return "it adds an exception handler that silently ignores the failure"
+    return None
+
+
 def propose_fix(ctx: RunContext, spec: FormalSpec, recs: list[dict]) -> FixProposal | None:
     info = ctx.info
     feedback = None
@@ -133,6 +215,11 @@ def propose_fix(ctx: RunContext, spec: FormalSpec, recs: list[dict]) -> FixPropo
         fixed_fn = str(d.get("fixed_function", "")).strip("\n")
         if not fixed_fn.strip():
             return None
+        problem = fix_changes_interface(info, fixed_fn)
+        if problem:
+            feedback = f"Rejected: {problem}. Fix the logic for the function's real callers instead."
+            last = FixProposal(explanation=str(d.get("explanation", "")).strip(), diff="", validated=False, validation=feedback)
+            continue
         new_source = ctx.lang.splice_function(info, fixed_fn)
         # The fix must load in the project's own runtime (its version, its installed
         # packages), not just in Larch's.

@@ -418,6 +418,22 @@ tokens) however long the conversation runs. The certificate is tamper-evident, n
 signed: it proves which code and contracts the verification covered and detects any
 later change; trust in the result still rests on re-running `larch verify`.
 
+## D25. Many disagreements get one diagnosis, and never a pass
+
+**Decision.** If at least half of the compared inputs disagree, Larch sends one
+diagnosis request with up to eight diverse examples (and the exception, when the code
+raised the same one on nearly all of them) and acts on the answer: `model_misread` and
+`representation` revise the model; `larch_calls_it_wrong` stops with an error;
+`implementation_wrong` and `mixed` continue to per-case adjudication. Independently,
+any remaining disagreement that neither side is blamed for makes the verdict partial.
+
+**Why.** Code that is wrong on nearly every input is rare and usually caught by its
+own tests; a model that misreads one central convention is common. Judging cases one
+at a time, a reviewer sees each disagreement in isolation and blames the code, so a
+single misreading turned into a confident "bug" with 100% disagreement. Looking at many
+examples at once exposes the common cause. Reporting "passed" with unexplained
+disagreements was simply wrong.
+
 ## Eval-driven decisions
 
 The data is in [EVALS.md](EVALS.md). Each choice below won a head-to-head comparison on

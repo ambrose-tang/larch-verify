@@ -358,7 +358,15 @@ class Prover:
 
 
 def split_decls(code: str) -> list[str]:
-    """Split a Lean snippet into top-level declarations (with preceding comments)."""
+    """Split a Lean snippet into top-level declarations (with preceding comments).
+
+    A line starts a declaration if it begins with `theorem`, `lemma`, `def`, `abbrev`,
+    `example` or `instance`, optionally preceded by an attribute (`@[...]`) and a
+    `private`, `protected` or `noncomputable` modifier. A new piece begins at such a line
+    once the current piece already holds a declaration; everything else (comments, blank
+    lines, proof bodies) stays with the declaration above it. Lines are split like
+    `str.splitlines()`; each piece is stripped of surrounding whitespace and empty pieces
+    are dropped."""
     starts = re.compile(r"^(?:@\[[^\n]*\]\s*)?(?:private\s+|protected\s+|noncomputable\s+)?(?:theorem|lemma|def|abbrev|example|instance)\b")
     chunks: list[list[str]] = []
     cur: list[str] = []

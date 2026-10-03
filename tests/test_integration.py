@@ -318,3 +318,82 @@ def test_apply_writes_validated_fix_only_if_file_unchanged(tmp_path: Path):
     f.write_text(CLAMP_BUG)
     _maybe_apply(report, f, Console(file=open("/dev/null", "w")), assume_yes=True)
     assert f.read_text() == CLAMP_OK
+
+
+# -- most inputs disagreeing: one diagnosis, not a bug report ------------------------------------
+
+def _scripted(formalization: dict, systematic: dict, repaired_model: str | None = None, per_case: str = "implementation_bug"):
+    asked = []
+
+    def respond(req):
+        if req.stage == "formalize":
+            return formalization
+        if req.stage == "adjudicate":
+            if "## Disagreements:" in req.prompt:
+                asked.append("systematic")
+                return systematic
+            asked.append("case")
+            return {"verdict": per_case, "explanation": "x"}
+        if req.stage == "model-repair":
+            return {"model": repaired_model or formalization["model"], "explanation": "swapped the bounds back", "spec_conflict": ""}
+        if req.stage == "fix":
+            return {"explanation": "-", "fixed_function": ""}
+        return "```lean\n-- nothing\n```"
+
+    return LLM(FakeProvider(respond), Ledger()), asked
+
+
+DOUBLE = 'def double(x: int) -> int:\n    """Twice x."""\n    return 2 * x\n'
+DOUBLE_SPEC = {
+    "understanding": "Twice x.", "params": [{"name": "x", "lean_type": "Int"}], "return_type": "Int", "exceptions": False,
+    "model": "def model (x : Int) : Int := 2 * x",
+    "precondition": {"english": "none", "lean": "True"},
+    "postconditions": [{"name": "same_sign", "english": "The result has the sign of x.", "lean": "(0 ≤ x → 0 ≤ result) ∧ (x ≤ 0 → result ≤ 0)"}],
+    "properties": [], "strategy": "def strategy(st):\n    return st.tuples(st.integers(-1000, 1000))",
+    "edge_cases": "[[0], [1], [-1]]", "notes": "",
+}
+
+
+def test_misread_model_is_revised_instead_of_blaming_the_code(tmp_path: Path):
+    from larch.engine.session import verify_function
+
+    # The formalizer misread `double` as tripling: its spec still holds, but it disagrees
+    # with the (correct) code on every input except 0.
+    misread = dict(DOUBLE_SPEC, model="def model (x : Int) : Int := 3 * x")
+    llm, asked = _scripted(misread, {"verdict": "model_misread", "common_cause": "the model triples instead of doubling",
+                                     "explanation": ""}, repaired_model=DOUBLE_SPEC["model"])
+    f = tmp_path / "double.py"
+    f.write_text(DOUBLE)
+    report = verify_function(f, "double", _cfg(tmp_path), llm=llm)
+    assert asked[0] == "systematic" and "case" not in asked
+    assert report.model_revisions and report.verdict == "passed", (report.headline, report.warnings)
+    assert report.drt["disagreements"] == 0
+
+
+def test_code_larch_cannot_call_is_an_error_not_a_bug(tmp_path: Path):
+    from larch.engine.session import verify_function
+
+    f = tmp_path / "double.py"
+    # The reviewer (scripted) finds every input failed for one reason that is not the logic.
+    f.write_text(DOUBLE.replace("return 2 * x", "return 2 * x.bit_count(2)"))
+    llm, asked = _scripted(DOUBLE_SPEC, {"verdict": "larch_calls_it_wrong", "common_cause": "bit_count takes no arguments",
+                                         "explanation": ""})
+    report = verify_function(f, "double", _cfg(tmp_path), llm=llm)
+    assert report.verdict == "error" and "could not call double" in report.headline, report.headline
+    assert "TypeError" in report.error and not report.findings
+    # Caught by the quick test right after formalization: no review, diagnosis, proofs or fix.
+    assert asked == [] and {r.stage for r in llm.provider.requests} == {"formalize"}
+
+
+def test_disagreements_nobody_can_attribute_never_pass(tmp_path: Path):
+    from larch.engine.session import verify_function
+
+    # Only `identity_inside` is a spec, so the bug above the interval violates none of them;
+    # the reviewer cannot tell who is right.
+    only_inside = dict(FORMALIZATION, postconditions=[FORMALIZATION["postconditions"][1]], properties=[])
+    llm, _ = _scripted(only_inside, {"verdict": "mixed", "common_cause": "", "explanation": ""}, per_case="ambiguous")
+    f = tmp_path / "clamp.py"
+    f.write_text(CLAMP_BUG)
+    report = verify_function(f, "clamp", _cfg(tmp_path), llm=llm)
+    assert report.drt["disagreements"] > 0
+    assert report.verdict == "partial" and "could not tell" in report.headline, (report.verdict, report.headline)

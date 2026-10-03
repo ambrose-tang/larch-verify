@@ -55,6 +55,11 @@ def verify_component(path: Path, name: str, cfg: Config, ui: UI | None = None, *
         if lang is None:
             raise ExtractError(f"{path.suffix or path.name}: unsupported file type")
         info = lang.extract_class(path, name)
+        from ..repo import numeric_problem
+
+        prob = numeric_problem(info)
+        if prob:
+            raise ExtractError(f"{name} {prob}.")
         report.language = lang.name
         report.line = info.lineno
         runtime = lang.runtime(info, cfg)
@@ -180,14 +185,21 @@ def spec_from_data(ctx: RunContext, data) -> tuple[ComponentSpec | None, list[st
         ops.append(Operation(method, [Param(str(p.get("name", "")), str(p.get("lean_type", "")).strip())
                                       for p in o.get("params") or [] if isinstance(p, dict)], str(o.get("returns", "Unit")).strip() or "Unit"))
     # How an observer is read follows from the class itself: a method is called, a
-    # property/getter or field is read.
+    # property/getter or field is read. It must exist: an invented observer makes every
+    # sequence fail at its first read.
     kinds = {m.name: m.kind for m in info.methods}
+    fields = public_fields(info)
     observers = []
     for o in data.get("observers") or []:
         if not isinstance(o, dict):
             continue
         name = str(o.get("name", "")).strip()
-        access = {"method": "call", "property": "attribute"}.get(kinds.get(name, ""), str(o.get("access", "attribute")))
+        if name not in kinds and name not in fields:
+            problems.append(f"observer `{name}` is not a public method, property or attribute of {info.name} (it has: "
+                            f"{', '.join(sorted(set(kinds) | fields)) or 'none'}); observe only what the class exposes, "
+                            "or use no observers")
+            continue
+        access = {"method": "call", "property": "attribute"}.get(kinds.get(name, ""), "attribute")
         observers.append(Observer(name, str(o.get("lean_type", "")).strip(), access))
     contracts = list(ctx.contracts)
     covered: set[int] = set()
@@ -236,6 +248,17 @@ def spec_from_data(ctx: RunContext, data) -> tuple[ComponentSpec | None, list[st
     )
     problems += spec.validate()
     return spec, problems
+
+
+def public_fields(info) -> set[str]:
+    """Public instance attributes the class assigns (`self.x = ...` / `this.x = ...`, or
+    class-level field declarations in TypeScript)."""
+    import re as _re
+
+    names = set(_re.findall(r"\b(?:self|this)\.([A-Za-z][A-Za-z0-9_]*)\s*(?::[^=\n]*)?=(?!=)", info.source))
+    if info.language != "python":
+        names |= set(_re.findall(r"^\s*(?:public\s+|readonly\s+)*([A-Za-z][A-Za-z0-9_]*)\s*[:=;]", info.source, _re.M))
+    return {n for n in names if not n.startswith("_")}
 
 
 def _norm(name) -> str:
@@ -300,6 +323,22 @@ def sanity(ctx: RunContext, spec: ComponentSpec) -> tuple[list[str], Sanity]:
     if impl.get("ok"):
         ci = impl.get("counts", {})
         san.impl_disagreements = sum(ci.get(k, 0) for k in DIVERGENT)
+        total = san.impl_disagreements + ci.get("agree", 0)
+        fails = impl.get("failures") or []
+        if total >= 20 and san.impl_disagreements >= 0.9 * total and fails:
+            from collections import Counter
+
+            group, n = Counter(f.get("group") for f in fails).most_common(1)[0]
+            if n >= 0.9 * len(fails):
+                f = next(x for x in fails if x.get("group") == group)
+                # The class and the model disagree the same way on nearly every sequence:
+                # the model does not describe this class (an invented observer, a wrong
+                # constructor or return shape). Repair now instead of testing for minutes.
+                return [f"The real class disagrees with your model on {san.impl_disagreements} of {total} quick-test "
+                        f"sequences, all in the same way, for example:\n{f.get('args_repr')}\nclass: {f.get('impl')}; "
+                        f"model: {f.get('model')}" + (f" ({f['detail']})" if f.get("detail") else "") +
+                        "\nA disagreement this uniform means the model does not describe this class. Model what the "
+                        "class actually exposes and returns."], san
     return [], san
 
 
@@ -610,15 +649,24 @@ def _run(ctx: RunContext, report: Report, spec_override: ComponentSpec | None) -
         f = actionable[0]
         report.verdict = "bug"
         report.headline = f"{f.title()}: after `{f.args_repr.splitlines()[-1]}` the {what} gives {f.impl}, the model {f.model}."
+        if valid and dis >= 0.5 * valid:
+            report.warnings.insert(0, f"the {what} disagrees with the model on {dis:,} of {valid:,} call sequences "
+                                      f"({dis / valid:.0%}). When almost every sequence disagrees, the model has usually "
+                                      "misread the code: check Larch's understanding above before changing it.")
+    elif dis:
+        # Never "passed" with disagreements nobody could attribute.
+        report.verdict = "partial"
+        report.headline = (f"{proved}/{total} contracts proved; the {what} disagrees with the model on {dis:,} of {valid:,} "
+                           "call sequences and Larch could not tell which of them is wrong (see below).")
     elif proved == total and total and valid:
         report.verdict = "passed"
         depth = report.drt.get("exhaustive_depth")
         extra = f", and on every sequence of up to {depth} calls over the small domains" if depth else ""
-        report.headline = (f"All {total} contracts proved for every reachable state (no sorry, no axioms); the class agrees "
+        report.headline = (f"All {total} contracts proved for every reachable state (no sorry, no axioms); the {what} agrees "
                            f"with the verified model on {valid:,} call sequences{extra}.")
     else:
         report.verdict = "partial"
-        report.headline = f"{proved}/{total} contracts proved; the class agrees with the model on {valid:,} call sequences."
+        report.headline = f"{proved}/{total} contracts proved; the {what} agrees with the model on {valid:,} call sequences."
 
 
 def fix_examples(res: dict) -> list[dict]:

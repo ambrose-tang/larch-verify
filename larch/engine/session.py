@@ -21,11 +21,21 @@ from ..ui import UI
 from ..util import cache_root, slug
 from .context import RunContext
 from .runner import JobRunner
-from .findings import adjudicate, classify, count_kind, make_finding, propose_fix, repair_model
+from .findings import (adjudicate, classify, count_kind, diagnose_systematic, make_finding, propose_fix, repair_model,
+                       systematic, SYSTEMATIC_RATE)
 from .formalize import FormalizeError, build_lean, formalize
 from .prove import finalize_proofs, prove_all
 from .testing import exhaustive_size, make_mutants, run_drt, run_examples, run_exhaustive, run_mutants
 from .store import load_approved, save_approved
+
+
+class CallMismatch(Exception):
+    """Nearly every input disagreed because the implementation is not being called the way
+    it is actually used (types, argument order, values it cannot take): no verdict on its logic."""
+
+    def __init__(self, cause: str, diag: dict):
+        super().__init__(cause)
+        self.cause, self.diag = cause, diag
 
 
 def artifacts_root(cfg: Config) -> Path:
@@ -53,6 +63,11 @@ def verify_function(path: Path, func: str, cfg: Config, ui: UI | None = None, *,
         if lang is None:
             raise ExtractError(f"{path.suffix or path.name}: unsupported file type")
         info = lang.extract(path, func)
+        from ..repo import scope_problem
+
+        prob = scope_problem(info)
+        if prob:
+            raise ExtractError(f"{func} {prob}.")
         report.language = lang.name
         report.line = info.lineno
         runtime = lang.runtime(info, cfg)
@@ -88,6 +103,13 @@ def verify_function(path: Path, func: str, cfg: Config, ui: UI | None = None, *,
             else f"Cannot verify {func}."
         )
         (run_dir / "error.txt").write_text(str(e) + "\n")
+    except CallMismatch as e:
+        report.verdict = "error"
+        d = e.diag
+        report.headline = (f"Larch could not call {func} the way it is really used: {d['dis']:,} of {d['valid']:,} inputs "
+                           "went wrong for the same reason, so nothing was concluded about its logic.")
+        report.error = e.cause + (f" (the implementation raised: {d['uniform_crash']})" if d.get("uniform_crash") else "")
+        report.drt = {"valid": d["valid"], "disagreements": d["dis"]}
     except FormalizeError as e:
         report.verdict = "error"
         report.error = f"{e}: " + "; ".join(" ".join(ln.strip() for ln in p.splitlines()[:4] if ln.strip())[:300] for p in e.problems[:3])
@@ -150,6 +172,15 @@ def _run(ctx: RunContext, report: Report, spec_override: FormalSpec | None) -> N
                         report.warnings.append(w)
                 if san.impl_disagreements:
                     st.line(f"[yellow]implementation already disagrees with the model on {san.impl_disagreements} of 200 quick-test inputs[/]")
+            quick = systematic(san.impl_run) if san.impl_run else None
+            if quick and quick.get("uniform_crash"):
+                # The real function fails the same way on nearly every input Larch can build:
+                # stop before review, proofs and mutation, which would all be meaningless.
+                types = ", ".join(f"{p.name}: {p.lean_type}" for p in spec.params)
+                raise CallMismatch(
+                    f"Larch read the parameters as ({types}), but the function raised the same exception on "
+                    f"{quick['dis']} of {quick['valid']} inputs built that way. Either those are not the types it takes "
+                    "(add type annotations and re-run) or it fails for every input.", quick)
             if cfg.auto_approve:
                 for p in spec.postconditions + spec.properties:
                     p.status = "auto-approved"
@@ -221,7 +252,22 @@ def _run(ctx: RunContext, report: Report, spec_override: FormalSpec | None) -> N
                     f"the documentation says {ctx.info.name.split('.')[-1]}({ex['args_repr']}) = {ex['expected']}",
                 ))
         model_issues: list[str] = []
-        if cls.unexplained:
+        # Most inputs disagreeing almost never means the code is wrong everywhere: look for
+        # the one cause (a misread model, a representation, Larch calling it wrong) first.
+        diag = systematic(drt) if cfg.adjudicate else None
+        if diag:
+            with ui.step(f"Diagnose: {diag['dis']:,} of {diag['valid']:,} inputs disagree") as st, ctx.timed("adjudicate"):
+                sys_verdict, cause = diagnose_systematic(ctx, spec, diag)
+                st.done(f"{sys_verdict.replace('_', ' ')}: {cause[:110]}", status="warn")
+            if sys_verdict in ("model_misread", "representation"):
+                model_issues.append(
+                    f"On {diag['dis']:,} of {diag['valid']:,} inputs the model disagrees with the implementation, which "
+                    f"matches the documentation. Common cause: {cause}\nExamples:\n"
+                    + "\n".join(f"- ({x.get('args_repr')}): implementation {x.get('impl')}, model {x.get('model')}" for x in diag["samples"])
+                )
+            elif sys_verdict == "larch_calls_it_wrong":
+                raise CallMismatch(cause, diag)
+        if cls.unexplained and not model_issues:
             with ui.step("Adjudicate disagreements") as st, ctx.timed("adjudicate"):
                 for r in cls.unexplained[:3]:
                     if cfg.adjudicate:
@@ -367,10 +413,20 @@ def _run(ctx: RunContext, report: Report, spec_override: FormalSpec | None) -> N
     # On a complete domain, a postcondition checked on the implementation's output for
     # every input holds for the code itself, proof or not; properties still need proofs.
     unproved_props = [s for s in report.active_specs if s.kind == "property" and not (s.proof and s.proof.status == "proved")]
+    dis = report.drt.get("disagreements", 0)
     if actionable:
         report.verdict = "bug"
         f = actionable[0]
         report.headline = f"{f.title()}: {ctx.info.name.split('.')[-1]}({f.args_repr}) returned {f.impl}, expected {f.model}."
+        if valid and dis >= SYSTEMATIC_RATE * valid:
+            report.warnings.insert(0, f"the implementation disagrees with the model on {dis:,} of {valid:,} inputs ({dis / valid:.0%}). "
+                                      "When almost every input disagrees, the model has usually misread the function: check "
+                                      "Larch's understanding above before changing the code.")
+    elif dis:
+        # Never "passed" with disagreements nobody could attribute.
+        report.verdict = "partial"
+        report.headline = (f"{proved}/{total} specs proved; the implementation disagrees with the model on {dis:,} of {valid:,} "
+                           "inputs and Larch could not tell which of them is wrong (see below).")
     elif complete and valid > 0 and not unproved_props:
         report.verdict = "passed"
         report.headline = (
@@ -385,7 +441,7 @@ def _run(ctx: RunContext, report: Report, spec_override: FormalSpec | None) -> N
         )
     else:
         report.verdict = "partial"
-        report.headline = f"{proved}/{total} specs proved; the implementation agrees with the model on {valid:,} random inputs."
+        report.headline = f"{proved}/{total} specs proved; the implementation agrees with the model on {valid - dis:,} random inputs."
         if valid == 0:
             report.warnings.append("no generated input satisfied the precondition; the implementation was not tested")
     possible = [f for f in findings if f.confidence == "possible"]
