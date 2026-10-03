@@ -1114,3 +1114,65 @@ def fidelity_user(items: list[tuple[str, str, str]]) -> str:
     for i, (wrote, english, lean) in enumerate(items):
         out.append(f"### {i}\nDeveloper: {wrote}\nReading: {english}\nLean: `{' '.join(lean.split())}`")
     return "\n\n".join(out)
+
+
+# ---------------------------------------------------------------------------
+# When most inputs disagree: one diagnosis over many examples
+# ---------------------------------------------------------------------------
+
+SYSTEMATIC_SYSTEM = """\
+You are diagnosing a differential test in which the implementation and a formal reference
+model (written from the documentation) disagree on MOST inputs. A real bug rarely makes
+code wrong on almost every input; usually one thing explains them all. Look at the
+examples together, work two of them by hand, and name the common cause:
+
+- "model_misread": the model gets the function's purpose or a central convention wrong
+  (for example sorts descending instead of ascending, counts from 1 instead of 0, or
+  treats a parameter as something else). The implementation is what the documentation
+  describes.
+- "representation": both compute the same thing but present it differently (a tuple
+  versus a list, None versus an empty value, cents versus units, a different ordering
+  the documentation does not fix).
+- "larch_calls_it_wrong": the implementation fails or misbehaves because the inputs it
+  receives do not match what it actually accepts (wrong types, wrong argument order,
+  values it cannot handle that the documentation excludes), not because of its logic.
+- "implementation_wrong": the implementation really is wrong in general, against the
+  documentation.
+- "mixed": no single cause.
+"""
+
+SYSTEMATIC_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "enum": ["model_misread", "representation", "larch_calls_it_wrong",
+                                               "implementation_wrong", "mixed"]},
+        "common_cause": {"type": "string", "description": "one or two sentences: the single thing that explains the examples"},
+        "explanation": {"type": "string"},
+    },
+    "required": ["verdict", "common_cause", "explanation"],
+    "additionalProperties": False,
+}
+
+
+def systematic_user(info, spec, diag: dict) -> str:
+    ex = "\n".join(f"- input ({s.get('args_repr')}): implementation {s.get('impl')}; model {s.get('model')}"
+                   for s in diag["samples"])
+    crash = (f"\nThe implementation raised the same exception on nearly every disagreeing input: {diag['uniform_crash']}\n"
+             if diag.get("uniform_crash") else "")
+    return f"""\
+## Function
+```{_fence(info)}
+{info.source}
+```
+
+## The model's understanding
+{spec.understanding}
+
+## Reference model (Lean)
+```lean
+{spec.model_code}
+```
+
+## Disagreements: {diag['dis']:,} of {diag['valid']:,} inputs ({diag['rate']:.0%})
+{ex}
+{crash}"""

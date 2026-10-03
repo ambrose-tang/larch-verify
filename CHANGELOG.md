@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Added
+- **Diagnosis when most inputs disagree.** When over half of the inputs (or call
+  sequences) disagree, Larch first asks for one common cause across many examples: a
+  misread model or a representation difference revises the model and re-tests; inputs
+  the code cannot really take (for example every input raising the same exception
+  because of how it was called) end the run as an error, not a bug; only "the code is
+  wrong in general" goes on to a bug report, which then carries a warning with the
+  disagreement rate.
 - **`larch`** (no arguments): an interactive session that drafts LARCH.md with you by
   asking about intent and confirming proposed contracts (with multiple-choice answers
   where they fit), then verifies on request. Every LARCH.md version is kept in
@@ -53,6 +60,11 @@
   with a LARCH.md, system rules and realistic seeded bugs.
 
 ### Fixed
+- A run whose disagreements could not be attributed to the code or the model was
+  reported as **passed** (one self-verification run passed with 665 of 674 inputs
+  disagreeing); it is now partial, and headlines count only the inputs that agreed.
+- `truncate(text, 0)` appended the whole text; English mentioning `/-` inside a Lean
+  doc comment left the comment open (both found by running Larch on itself).
 - Model results a JavaScript runtime cannot represent exactly (beyond 2^53) are outside
   the compared domain instead of reported as disagreements.
 - Formalization errors in reports show the Lean error, not only its heading.

@@ -610,15 +610,24 @@ def _run(ctx: RunContext, report: Report, spec_override: ComponentSpec | None) -
         f = actionable[0]
         report.verdict = "bug"
         report.headline = f"{f.title()}: after `{f.args_repr.splitlines()[-1]}` the {what} gives {f.impl}, the model {f.model}."
+        if valid and dis >= 0.5 * valid:
+            report.warnings.insert(0, f"the {what} disagrees with the model on {dis:,} of {valid:,} call sequences "
+                                      f"({dis / valid:.0%}). When almost every sequence disagrees, the model has usually "
+                                      "misread the code: check Larch's understanding above before changing it.")
+    elif dis:
+        # Never "passed" with disagreements nobody could attribute.
+        report.verdict = "partial"
+        report.headline = (f"{proved}/{total} contracts proved; the {what} disagrees with the model on {dis:,} of {valid:,} "
+                           "call sequences and Larch could not tell which of them is wrong (see below).")
     elif proved == total and total and valid:
         report.verdict = "passed"
         depth = report.drt.get("exhaustive_depth")
         extra = f", and on every sequence of up to {depth} calls over the small domains" if depth else ""
-        report.headline = (f"All {total} contracts proved for every reachable state (no sorry, no axioms); the class agrees "
+        report.headline = (f"All {total} contracts proved for every reachable state (no sorry, no axioms); the {what} agrees "
                            f"with the verified model on {valid:,} call sequences{extra}.")
     else:
         report.verdict = "partial"
-        report.headline = f"{proved}/{total} contracts proved; the class agrees with the model on {valid:,} call sequences."
+        report.headline = f"{proved}/{total} contracts proved; the {what} agrees with the model on {valid:,} call sequences."
 
 
 def fix_examples(res: dict) -> list[dict]:
