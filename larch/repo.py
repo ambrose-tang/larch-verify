@@ -179,6 +179,19 @@ def _code_only(info: FunctionInfo) -> str:
 
 
 _DICT_METHODS = {"get", "items", "keys", "values", "setdefault", "update", "pop"}
+# Numerical libraries: floating-point tensors and arrays, which Larch's exact models cannot represent.
+_NUMERIC = re.compile(r"\b(torch|nn|numpy|np|jax|jnp|tensorflow|tf|scipy|pandas|pd|sklearn)\.")
+
+
+def numeric_problem(info) -> str | None:
+    """Code built on floating-point tensors or arrays (PyTorch, NumPy, JAX, pandas...)."""
+    m = _NUMERIC.search(_code_only(info))
+    if not m:
+        return None
+    lib = {"nn": "torch", "np": "numpy", "jnp": "jax", "tf": "tensorflow", "pd": "pandas"}.get(m.group(1), m.group(1))
+    return (f"computes with {lib} (floating-point tensors or arrays), which Larch cannot model exactly; "
+            "to verify the discrete logic inside it, move that logic into a function or class over ints, "
+            "strings and lists")
 
 
 def scope_problem(info: FunctionInfo) -> str | None:
@@ -186,6 +199,9 @@ def scope_problem(info: FunctionInfo) -> str | None:
     returns a value, or an unannotated parameter is used as a dict, which Larch can
     neither infer nor generate. Without this, a guessed parameter type makes the real
     function fail on every input and the run reports nonsense."""
+    prob = numeric_problem(info)
+    if prob:
+        return prob
     if info.language != "python":
         return None
     import ast
@@ -270,6 +286,9 @@ def assess_class(info) -> tuple[str, str, float]:
     """(status, reason, score) for a class: every public method must use supported types
     and the code must not do I/O (its own state, via self/this, is the point)."""
     lang = info.language
+    prob = numeric_problem(info)
+    if prob:
+        return "skipped", prob, 0.0
     for p in info.params:
         prob = _type_problem(p.annotation, lang)
         if prob:

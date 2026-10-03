@@ -60,6 +60,18 @@
   with a LARCH.md, system rules and realistic seeded bugs.
 
 ### Fixed
+- Classes and functions built on PyTorch, NumPy, JAX, pandas and similar (floating-point
+  tensors and arrays) are refused with the reason, by `larch scan`, `larch verify` and
+  the chat, instead of being "modelled" as something else and failing every test.
+- A model may only observe what the class exposes: an invented observer (one run read
+  `cur`, which the class does not have, and failed 4,262 of 4,262 sequences) is sent
+  back to the formalizer with the class's real members.
+- When the real class disagrees with the model on nearly every quick-test sequence in
+  the same way, formalization is repaired on the spot, and the run ends as "could not
+  formalize" if it cannot be, rather than testing for minutes and blaming the code.
+- `larch` chat: it no longer writes LARCH.md before you have said anything, an
+  unchanged draft is not a new version, it refuses to add subjects Larch cannot verify,
+  and it tells you at the start which existing subjects cannot be verified and why.
 - A function that only plots or writes files, or whose untyped parameter is read as a
   dict (`r.get(...)`, `r["task"]`), was verified anyway with a guessed parameter type,
   so every call crashed and the report claimed a bug with 100% disagreement (and

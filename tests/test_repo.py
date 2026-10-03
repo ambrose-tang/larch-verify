@@ -236,3 +236,22 @@ def test_fix_may_not_change_the_interface_or_hide_failures():
     assert "silently ignores" in fix_changes_interface(info, hide)
     assert "parameters" in fix_changes_interface(info, "def g(rows, strict=False):\n    return []\n")
     assert fix_changes_interface(info, "def g(rows):\n    return [r['b'] for r in rows]\n") is None
+
+
+def test_tensor_and_array_code_is_out_of_scope(tmp_path):
+    from larch.py.backend import PYTHON
+    from larch.repo import assess_class, scope_problem
+
+    f = tmp_path / "fsm.py"
+    f.write_text(
+        "import torch\nimport torch.nn as nn\nimport numpy as np\n\n"
+        "class FactoredFSM(nn.Module):\n    def __init__(self, k: int):\n        super().__init__()\n"
+        "        self.trans = nn.Parameter(torch.randn(k, 4))\n\n    def step(self, sym: int) -> int:\n"
+        "        return int(self.trans[0].argmax())\n\n"
+        "def median_of(xs: list[int]) -> int:\n    return int(np.median(xs))\n\n"
+        "def plain(xs: list[int]) -> int:\n    return sorted(xs)[len(xs) // 2]\n"
+    )
+    status, why, _ = assess_class(PYTHON.extract_class(f, "FactoredFSM"))
+    assert status == "skipped" and "torch" in why
+    assert "numpy" in scope_problem(PYTHON.extract(f, "median_of"))
+    assert scope_problem(PYTHON.extract(f, "plain")) is None

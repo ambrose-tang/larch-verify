@@ -95,6 +95,13 @@ database: postgres                          (postgres | sqlite | none)
 - A guarantee about components together.  (uses: path/to/file.py::Class, service NAME)
 ```
 Only use subjects that exist in the repository summary or that the developer named.
+
+What Larch can verify: exact, discrete behaviour over integers, booleans, strings, lists
+and tuples (functions, classes, HTTP services). It cannot verify floating-point or tensor
+code (PyTorch, NumPy, pandas), plotting, file or network I/O, or functions that take
+dicts or return nothing. Never propose contracts for anything under "Cannot be verified";
+if the developer asks for one, say briefly why Larch cannot check it and suggest moving
+the discrete logic it relies on into a small function over ints and lists.
 """
 
 
@@ -146,9 +153,12 @@ class ChatSession:
         return v
 
     def apply(self, text: str, note: str) -> str | None:
-        """Write a new LARCH.md (kept as a version); an error message if it does not parse."""
+        """Write a new LARCH.md (kept as a version); an error message if it does not parse
+        or adds something Larch cannot verify. An unchanged draft is not a new version."""
         text = clean_draft(text)
-        problem = check_draft(text, self.root)
+        if text == self.draft:
+            return None
+        problem = check_draft(text, self.root, before=self.draft)
         if problem:
             return problem
         self.draft = text
@@ -180,6 +190,12 @@ class ChatSession:
 
     # -- conversation ------------------------------------------------------------------------
     def opening(self) -> str:
+        bad = unverifiable_subjects(self.root, self.md) if self.draft else []
+        if bad:
+            listed = "; ".join(f"{t}: {why}" for t, why in bad)
+            return ("(The developer opened Larch on a repository that already has the LARCH.md above. Some of its subjects "
+                    f"cannot be verified: {listed}. Greet in one line, say which ones and why in a few words, offer to "
+                    "remove them, and ask what to work on.)")
         if self.draft:
             return "(The developer opened Larch on a repository that already has the LARCH.md above. Greet briefly and ask what to work on.)"
         return "(The developer just opened Larch. Greet in one line, say what you see in the repository, and ask what it is for.)"
@@ -199,10 +215,14 @@ class ChatSession:
             if on_read:
                 on_read(reads)
             self.turns.append(Turn("code", read_sources(self.root, reads)))
+        if user_text is None:
+            data["draft"] = ""  # nothing is agreed before the developer has said anything
         if data.get("draft"):
-            problem = self.apply(str(data["draft"]), str(data.get("change", "")))
+            before = len(self.versions)
+            problem = self.apply(str(data["draft"]), str(data.get("change", "")).strip().strip('"'))
             if problem:
                 data["say"] = (data.get("say") or "") + f"\n\n_(Larch kept the previous draft: {problem})_"
+            if problem or len(self.versions) == before:
                 data["draft"] = ""
         self.ready = bool(data.get("ready"))
         self.turns.append(Turn("larch", str(data.get("say", ""))))
@@ -230,9 +250,10 @@ def repo_summary(root: Path, limit: int = 14) -> str:
     from .repo import scan
 
     try:
-        cands = [c for c in scan([root], root=root) if c.status == "ready"][:limit]
+        everything = scan([root], root=root)
     except Exception:  # noqa: BLE001
-        cands = []
+        everything = []
+    cands = [c for c in everything if c.status == "ready"][:limit]
     lines = []
     for c in cands:
         doc = ""
@@ -248,6 +269,11 @@ def repo_summary(root: Path, limit: int = 14) -> str:
            and any(k in p.read_text(errors="ignore")[:4000] for k in ("FastAPI(", "Flask(", "@app.route", "APIRouter("))][:3]
     if web:
         lines.append("Possible HTTP services: " + ", ".join(str(p) for p in web))
+    skipped = [c for c in everything if c.status == "skipped" and c.reason and "no parameters" not in c.reason]
+    skipped.sort(key=lambda c: (c.kind != "component", not c.documented))
+    if skipped:
+        lines.append("\nCannot be verified (never propose these):")
+        lines += [f"- {c.target}: {c.reason[:120]}" for c in skipped[:8]]
     return "\n".join(lines) or "(no verifiable functions found)"
 
 
@@ -300,9 +326,38 @@ def clean_draft(text: str) -> str:
     return "\n".join(lines[first:]).strip() + "\n"
 
 
-def check_draft(text: str, root: Path) -> str | None:
+def subject_problem(root: Path, subj) -> str | None:
+    """Why Larch cannot verify a LARCH.md subject (function or class), from its code."""
+    from .lang import language_for
+    from .repo import assess, assess_class
+
+    if subj.kind == "service" or subj.path is None:
+        return None
+    lang = language_for(subj.path)
+    if lang is None or not subj.path.exists():
+        return None
+    try:
+        if subj.kind == "component":
+            status, why, _ = assess_class(lang.extract_class(subj.path, subj.name))
+        else:
+            status, why, _ = assess(lang.extract(subj.path, subj.name))
+    except Exception as e:  # noqa: BLE001
+        return str(e)
+    return why if status != "ready" else None
+
+
+def unverifiable_subjects(root: Path, md: Path) -> list[tuple[str, str]]:
+    try:
+        cf = larchmd.load(md)
+    except larchmd.ContractsError:
+        return []
+    return [(s.target, why) for s in cf.subjects if (why := subject_problem(root, s))]
+
+
+def check_draft(text: str, root: Path, before: str = "") -> str | None:
     """Why a draft is not a usable LARCH.md, or None. Parsed next to the real file so
-    relative paths and `include:` resolve the same way."""
+    relative paths and `include:` resolve the same way. Subjects it adds must be ones
+    Larch can verify (those already there are flagged at the start instead)."""
     p = root / f".{larchmd.FILENAME}.check"
     p.write_text(text)
     try:
@@ -311,6 +366,13 @@ def check_draft(text: str, root: Path) -> str | None:
         return str(e).replace(str(p), "LARCH.md")
     finally:
         p.unlink(missing_ok=True)
+    old = {ln.strip() for ln in before.splitlines() if ln.startswith("## ")}
+    for subj in cf.subjects:
+        if f"## {subj.target}" in old or f"## {subj.label}" in old:
+            continue
+        why = subject_problem(root, subj) if subj.path is not None and subj.path.exists() else None
+        if why:
+            return f"{subj.target} cannot be verified: {why}"
     missing = [s.target for s in cf.subjects if s.kind != "service" and not (root / s.target.split("::")[0]).exists()]
     return f"no such file: {', '.join(missing)}" if missing else None
 

@@ -304,3 +304,49 @@ def test_unfaithful_contract_reading_is_sent_back(tmp_path):
     report = verify_component(f, "Ledger", cfg, llm=LLM(FakeProvider(respond), Ledger()), subject=subject)
     assert stages[:4] == ["formalize", "fidelity", "formalize", "fidelity"]
     assert not any("mistranslation" in w for w in report.warnings)
+
+
+def test_invented_observer_is_rejected(tmp_path):
+    """A model once observed `cur`, which the class does not have: every sequence failed at
+    its first read (4,262 of 4,262) and a model revision did not notice."""
+    from types import SimpleNamespace
+
+    from larch.engine.component_session import spec_from_data
+    from larch.lang import language_for
+
+    f, _ = _subject(tmp_path, LEDGER_OK)
+    ctx = SimpleNamespace(info=language_for(f).extract_class(f, "Ledger"), contracts=[])
+    d = formalization()
+    d["operation_contracts"] = []
+    d["observers"] = [{"name": "cur", "lean_type": "Int", "access": "attribute"}]
+    _, problems = spec_from_data(ctx, d)
+    assert any("observer `cur` is not a public method" in p and "total" in p for p in problems), problems
+
+
+@needs_lean
+def test_model_that_misses_the_class_everywhere_is_not_a_bug(tmp_path):
+    """When the real class disagrees with the model on nearly every quick-test sequence in
+    the same way, formalization is repaired; if it cannot be, the run ends as an error
+    before any testing, proving or bug report."""
+    from larch.engine.component_session import verify_component
+    from larch.llm.base import LLM, Ledger
+    from larch.llm.providers import FakeProvider
+
+    stages = []
+
+    def respond(req):
+        stages.append(req.stage)
+        if req.stage == "formalize":
+            d = formalization()
+            d["model"] = MODEL.replace("def obs_total (s : State) : Int := sumBal s.balances",
+                                       "def obs_total (s : State) : Int := sumBal s.balances + 1")
+            return d
+        return "```lean\n-- nothing\n```"
+
+    f, subject = _subject(tmp_path, LEDGER_OK)
+    subject.contracts = []
+    cfg = _cfg(tmp_path)
+    report = verify_component(f, "Ledger", cfg, llm=LLM(FakeProvider(respond), Ledger()), subject=subject)
+    assert report.verdict == "error" and "formalize" in report.headline.lower(), (report.verdict, report.headline)
+    assert "all in the same way" in report.error and not report.findings
+    assert set(stages) <= {"formalize", "fidelity"}
